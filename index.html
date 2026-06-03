@@ -71,14 +71,33 @@
         <section class="composer">
           <form id="noteForm" autocomplete="off">
             <textarea id="noteInput" name="note" rows="4" maxlength="262144" placeholder="Paste or type a note" autofocus></textarea>
-            <button class="send-button" id="sendButton" type="submit">
-              <span>Send</span>
+            <div class="composer-actions">
+              <input class="file-input" id="imageInput" type="file" accept="image/png,image/jpeg,image/gif,image/webp" aria-label="Attach image">
+              <button class="icon-button" id="imageButton" type="button" title="Attach image" aria-label="Attach image">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M15 8h.01"></path>
+                  <rect x="3" y="3" width="18" height="18" rx="2"></rect>
+                  <path d="m21 15-5-5L5 21"></path>
+                </svg>
+              </button>
+              <button class="send-button" id="sendButton" type="submit">
+                <span>Send</span>
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="m22 2-7 20-4-9-9-4Z"></path>
+                  <path d="M22 2 11 13"></path>
+                </svg>
+              </button>
+            </div>
+          </form>
+          <div class="image-preview" id="imagePreview" hidden>
+            <img id="imagePreviewThumb" alt="">
+            <button class="icon-button compact is-danger" id="removeImageButton" type="button" title="Remove image" aria-label="Remove image">
               <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="m22 2-7 20-4-9-9-4Z"></path>
-                <path d="M22 2 11 13"></path>
+                <path d="M18 6 6 18"></path>
+                <path d="m6 6 12 12"></path>
               </svg>
             </button>
-          </form>
+          </div>
         </section>
 
         <section class="feed" aria-label="Messages">
@@ -86,6 +105,17 @@
           <div class="message-list" id="messageList"></div>
         </section>
       </main>
+    </div>
+
+    <div class="modal-backdrop" id="confirmDialog" hidden>
+      <section class="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="confirmTitle" aria-describedby="confirmMessage">
+        <h2 id="confirmTitle">Confirm</h2>
+        <p id="confirmMessage"></p>
+        <div class="confirm-actions">
+          <button class="secondary-button" id="confirmCancelButton" type="button">Cancel</button>
+          <button class="danger-button" id="confirmAcceptButton" type="button">Confirm</button>
+        </div>
+      </section>
     </div>
   </body>
 </html>

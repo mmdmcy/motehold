@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import json
 import mimetypes
 import os
@@ -17,9 +19,12 @@ from urllib.parse import parse_qs, urlparse
 
 APP_DIR = Path(__file__).resolve().parent
 STATIC_DIR = APP_DIR / "static"
-MAX_BODY_BYTES = 256 * 1024
+MAX_TEXT_CHARS = 256 * 1024
+MAX_IMAGE_BYTES = 5 * 1024 * 1024
+MAX_BODY_BYTES = 7 * 1024 * 1024
 MAX_CHANNEL_NAME_CHARS = 40
 DEFAULT_CHANNEL_NAME = "general"
+ALLOWED_IMAGE_TYPES = {"image/gif", "image/jpeg", "image/png", "image/webp"}
 CSP = (
     "default-src 'self'; "
     "connect-src 'self'; "
@@ -102,6 +107,14 @@ def normalize_channel_name(value: str) -> str:
     return " ".join(value.strip().split())
 
 
+def image_error_status(error: str) -> int:
+    if error == "image_too_large":
+        return 413
+    if error == "unsupported_image_type":
+        return 415
+    return 400
+
+
 class MessageStore:
     def __init__(self, db_path: Path) -> None:
         self._lock = threading.Lock()
@@ -134,6 +147,8 @@ class MessageStore:
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         channel_id INTEGER NOT NULL,
                         body TEXT NOT NULL,
+                        image_type TEXT,
+                        image_data BLOB,
                         created_at TEXT NOT NULL,
                         FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE
                     )
@@ -145,6 +160,15 @@ class MessageStore:
                     "UPDATE messages SET channel_id = ? WHERE channel_id IS NULL",
                     (default_channel_id,),
                 )
+
+            message_columns = {
+                row["name"]
+                for row in self._conn.execute("PRAGMA table_info(messages)").fetchall()
+            }
+            if "image_type" not in message_columns:
+                self._conn.execute("ALTER TABLE messages ADD COLUMN image_type TEXT")
+            if "image_data" not in message_columns:
+                self._conn.execute("ALTER TABLE messages ADD COLUMN image_data BLOB")
 
             self._conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_messages_channel_id ON messages(channel_id)"
@@ -247,6 +271,34 @@ class MessageStore:
                 )
         return None
 
+    def _message_from_row(self, row: sqlite3.Row) -> dict[str, object]:
+        message = dict(row)
+        image_size = message.get("image_size")
+        if image_size is not None:
+            message["image_size"] = int(image_size)
+            message["image_url"] = f"/api/messages/{message['id']}/image"
+        else:
+            message.pop("image_type", None)
+            message.pop("image_size", None)
+        return message
+
+    def _fetch_message_locked(self, message_id: int) -> dict[str, object]:
+        row = self._conn.execute(
+            """
+            SELECT
+                id,
+                channel_id,
+                body,
+                created_at,
+                image_type,
+                length(image_data) AS image_size
+            FROM messages
+            WHERE id = ?
+            """,
+            (message_id,),
+        ).fetchone()
+        return self._message_from_row(row)
+
     def list_messages(
         self,
         channel_id: int,
@@ -258,7 +310,13 @@ class MessageStore:
 
             rows = self._conn.execute(
                 """
-                SELECT id, channel_id, body, created_at
+                SELECT
+                    id,
+                    channel_id,
+                    body,
+                    created_at,
+                    image_type,
+                    length(image_data) AS image_size
                 FROM messages
                 WHERE channel_id = ?
                 ORDER BY id DESC
@@ -266,12 +324,14 @@ class MessageStore:
                 """,
                 (channel_id, limit),
             ).fetchall()
-        return [dict(row) for row in rows], None
+        return [self._message_from_row(row) for row in rows], None
 
     def create_message(
         self,
         body: str,
         channel_id: int,
+        image_type: str | None = None,
+        image_data: bytes | None = None,
     ) -> tuple[dict[str, object] | None, str | None]:
         with self._lock:
             if not self._channel_exists_locked(channel_id):
@@ -279,21 +339,20 @@ class MessageStore:
 
             cursor = self._conn.execute(
                 """
-                INSERT INTO messages (channel_id, body, created_at)
-                VALUES (?, ?, ?)
+                INSERT INTO messages (channel_id, body, image_type, image_data, created_at)
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                (channel_id, body, utc_timestamp()),
+                (
+                    channel_id,
+                    body,
+                    image_type,
+                    sqlite3.Binary(image_data) if image_data is not None else None,
+                    utc_timestamp(),
+                ),
             )
             self._conn.commit()
-            row = self._conn.execute(
-                """
-                SELECT id, channel_id, body, created_at
-                FROM messages
-                WHERE id = ?
-                """,
-                (cursor.lastrowid,),
-            ).fetchone()
-        return dict(row), None
+            message = self._fetch_message_locked(int(cursor.lastrowid))
+        return message, None
 
     def delete_message(self, message_id: int) -> bool:
         with self._lock:
@@ -303,6 +362,20 @@ class MessageStore:
             )
             self._conn.commit()
         return cursor.rowcount > 0
+
+    def get_message_image(self, message_id: int) -> tuple[str, bytes] | None:
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT image_type, image_data
+                FROM messages
+                WHERE id = ?
+                """,
+                (message_id,),
+            ).fetchone()
+        if not row or row["image_type"] is None or row["image_data"] is None:
+            return None
+        return str(row["image_type"]), bytes(row["image_data"])
 
 
 class EventHub:
@@ -355,6 +428,8 @@ def make_handler(store: MessageStore, events: EventHub, log_requests: bool):
                 self._serve_file(APP_DIR / "index.html", cache=False)
             elif path == "/api/channels":
                 self._send_json({"channels": store.list_channels()}, cache=False)
+            elif path.startswith("/api/messages/") and path.endswith("/image"):
+                self._serve_message_image(path)
             elif path == "/api/messages":
                 self._send_messages(parsed.query)
             elif path == "/events":
@@ -376,6 +451,8 @@ def make_handler(store: MessageStore, events: EventHub, log_requests: bool):
                 self._serve_file(APP_DIR / "index.html", cache=False, head_only=True)
             elif path == "/api/channels":
                 self._send_json({"channels": store.list_channels()}, cache=False, head_only=True)
+            elif path.startswith("/api/messages/") and path.endswith("/image"):
+                self._serve_message_image(path, head_only=True)
             elif path == "/api/messages":
                 self._send_messages(parsed.query, head_only=True)
             elif path == "/health":
@@ -422,7 +499,20 @@ def make_handler(store: MessageStore, events: EventHub, log_requests: bool):
             if not isinstance(body, str):
                 self._send_json({"error": "body_must_be_text"}, status=400, cache=False)
                 return
-            if not body.strip():
+            if len(body) > MAX_TEXT_CHARS:
+                self._send_json({"error": "message_too_large"}, status=413, cache=False)
+                return
+
+            image, image_error = self._image_from_payload(data)
+            if image_error:
+                self._send_json(
+                    {"error": image_error},
+                    status=image_error_status(image_error),
+                    cache=False,
+                )
+                return
+
+            if not body.strip() and image is None:
                 self._send_json({"error": "empty_message"}, status=422, cache=False)
                 return
 
@@ -430,7 +520,9 @@ def make_handler(store: MessageStore, events: EventHub, log_requests: bool):
             if channel_id is None:
                 return
 
-            message, error = store.create_message(body, channel_id)
+            image_type = image[0] if image else None
+            image_data = image[1] if image else None
+            message, error = store.create_message(body, channel_id, image_type, image_data)
             if error:
                 self._send_json({"error": error}, status=404, cache=False)
                 return
@@ -481,6 +573,65 @@ def make_handler(store: MessageStore, events: EventHub, log_requests: bool):
             events.publish({"type": "message_deleted", "id": message_id})
             self._send_json({"ok": True}, cache=False)
 
+        def _image_from_payload(
+            self,
+            payload: dict[str, object],
+        ) -> tuple[tuple[str, bytes] | None, str | None]:
+            raw_image = payload.get("image")
+            if raw_image is None:
+                return None, None
+            if not isinstance(raw_image, dict):
+                return None, "image_must_be_object"
+
+            raw_type = raw_image.get("type")
+            raw_data = raw_image.get("data_url", raw_image.get("data"))
+            if not isinstance(raw_type, str) or not isinstance(raw_data, str):
+                return None, "invalid_image"
+
+            image_type = raw_type.strip().lower()
+            if image_type not in ALLOWED_IMAGE_TYPES:
+                return None, "unsupported_image_type"
+
+            encoded = raw_data
+            if raw_data.startswith("data:"):
+                header, separator, encoded_body = raw_data.partition(",")
+                if not separator:
+                    return None, "invalid_image"
+                media_type = header.removeprefix("data:").split(";", 1)[0].lower()
+                if media_type != image_type:
+                    return None, "invalid_image"
+                encoded = encoded_body
+
+            try:
+                image_data = base64.b64decode(encoded, validate=True)
+            except (binascii.Error, ValueError):
+                return None, "invalid_image"
+
+            if not image_data:
+                return None, "invalid_image"
+            if len(image_data) > MAX_IMAGE_BYTES:
+                return None, "image_too_large"
+            return (image_type, image_data), None
+
+        def _serve_message_image(self, path: str, head_only: bool = False) -> None:
+            message_id = self._message_image_id(path)
+            if message_id is None:
+                return
+
+            image = store.get_message_image(message_id)
+            if image is None:
+                self._send_json({"error": "not_found"}, status=404, cache=False, head_only=head_only)
+                return
+
+            image_type, image_data = image
+            self.send_response(200)
+            self.send_header("Content-Type", image_type)
+            self.send_header("Content-Length", str(len(image_data)))
+            self.send_header("Cache-Control", "max-age=3600")
+            self.end_headers()
+            if not head_only:
+                self.wfile.write(image_data)
+
         def _send_messages(self, query: str, head_only: bool = False) -> None:
             channel_id = self._channel_id_from_query(query)
             if channel_id is None:
@@ -509,6 +660,12 @@ def make_handler(store: MessageStore, events: EventHub, log_requests: bool):
         def _resource_id(self, path: str, prefix: str, error: str) -> int | None:
             raw_id = path[len(prefix) :]
             return self._positive_int(raw_id, error)
+
+        def _message_image_id(self, path: str) -> int | None:
+            prefix = "/api/messages/"
+            suffix = "/image"
+            raw_id = path[len(prefix) : -len(suffix)]
+            return self._positive_int(raw_id, "invalid_message_id")
 
         def _positive_int(self, value: object, error: str) -> int | None:
             if isinstance(value, bool):

@@ -10,9 +10,11 @@ It is designed for personal use on a private LAN, VPN, or tailnet. It does not i
 - SQLite message storage.
 - Create and delete channels.
 - Store messages inside specific channels.
+- Attach PNG, JPEG, GIF, or WebP images up to 5 MB.
 - Collapsible channel sidebar.
 - Live updates with server-sent events.
 - Copy and delete actions for each note.
+- Confirm dialog before deleting messages or channels.
 - Gray dark theme for phone readability.
 
 ## Run
