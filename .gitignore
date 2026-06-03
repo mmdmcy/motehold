@@ -1,0 +1,15 @@
+.env
+.local/
+
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.log
+*.pid
+
+__pycache__/
+*.py[cod]
+.python-version
+
+.DS_Store
