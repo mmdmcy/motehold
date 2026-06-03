@@ -712,7 +712,7 @@ def make_handler(store: MessageStore, events: EventHub, log_requests: bool):
             if not target.is_relative_to(STATIC_DIR) or not target.is_file():
                 self._send_json({"error": "not_found"}, status=404, cache=False)
                 return
-            self._serve_file(target, cache=True, head_only=head_only)
+            self._serve_file(target, cache=False, head_only=head_only)
 
         def _serve_file(self, path: Path, cache: bool, head_only: bool = False) -> None:
             try:

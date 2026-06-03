@@ -70,24 +70,20 @@
 
         <section class="composer">
           <form id="noteForm" autocomplete="off">
-            <textarea id="noteInput" name="note" rows="4" maxlength="262144" placeholder="Paste or type a note" autofocus></textarea>
-            <div class="composer-actions">
+            <div class="message-input">
+              <textarea id="noteInput" name="note" rows="4" maxlength="262144" placeholder="Paste or type a note" autofocus></textarea>
               <input class="file-input" id="imageInput" type="file" accept="image/png,image/jpeg,image/gif,image/webp" aria-label="Attach image">
-              <button class="icon-button" id="imageButton" type="button" title="Attach image" aria-label="Attach image">
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M15 8h.01"></path>
-                  <rect x="3" y="3" width="18" height="18" rx="2"></rect>
-                  <path d="m21 15-5-5L5 21"></path>
-                </svg>
-              </button>
-              <button class="send-button" id="sendButton" type="submit">
-                <span>Send</span>
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="m22 2-7 20-4-9-9-4Z"></path>
-                  <path d="M22 2 11 13"></path>
-                </svg>
+              <button class="photo-button" id="imageButton" type="button" title="Attach image" aria-label="Attach image">
+                <span aria-hidden="true">🖼️</span>
               </button>
             </div>
+            <button class="send-button" id="sendButton" type="submit">
+              <span>Send</span>
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="m22 2-7 20-4-9-9-4Z"></path>
+                <path d="M22 2 11 13"></path>
+              </svg>
+            </button>
           </form>
           <div class="image-preview" id="imagePreview" hidden>
             <img id="imagePreviewThumb" alt="">
