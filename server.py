@@ -12,12 +12,14 @@ import threading
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 
 APP_DIR = Path(__file__).resolve().parent
 STATIC_DIR = APP_DIR / "static"
 MAX_BODY_BYTES = 256 * 1024
+MAX_CHANNEL_NAME_CHARS = 40
+DEFAULT_CHANNEL_NAME = "general"
 CSP = (
     "default-src 'self'; "
     "connect-src 'self'; "
@@ -88,52 +90,210 @@ def resolve_app_path(value: str) -> Path:
     return path.resolve()
 
 
+def utc_timestamp() -> str:
+    return (
+        datetime.now(timezone.utc)
+        .isoformat(timespec="seconds")
+        .replace("+00:00", "Z")
+    )
+
+
+def normalize_channel_name(value: str) -> str:
+    return " ".join(value.strip().split())
+
+
 class MessageStore:
     def __init__(self, db_path: Path) -> None:
         self._lock = threading.Lock()
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        self._conn.execute("PRAGMA foreign_keys = ON")
+        self._migrate()
+
+    def _migrate(self) -> None:
         with self._conn:
             self._conn.execute(
                 """
-                CREATE TABLE IF NOT EXISTS messages (
+                CREATE TABLE IF NOT EXISTS channels (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    body TEXT NOT NULL,
+                    name TEXT NOT NULL COLLATE NOCASE UNIQUE,
                     created_at TEXT NOT NULL
                 )
                 """
             )
+            default_channel_id = self._ensure_default_channel_locked()
+            message_columns = {
+                row["name"]
+                for row in self._conn.execute("PRAGMA table_info(messages)").fetchall()
+            }
 
-    def list_messages(self, limit: int = 200) -> list[dict[str, object]]:
+            if not message_columns:
+                self._conn.execute(
+                    """
+                    CREATE TABLE messages (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        channel_id INTEGER NOT NULL,
+                        body TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE
+                    )
+                    """
+                )
+            elif "channel_id" not in message_columns:
+                self._conn.execute("ALTER TABLE messages ADD COLUMN channel_id INTEGER")
+                self._conn.execute(
+                    "UPDATE messages SET channel_id = ? WHERE channel_id IS NULL",
+                    (default_channel_id,),
+                )
+
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_messages_channel_id ON messages(channel_id)"
+            )
+
+    def _ensure_default_channel_locked(self) -> int:
+        row = self._conn.execute(
+            "SELECT id FROM channels WHERE name = ?",
+            (DEFAULT_CHANNEL_NAME,),
+        ).fetchone()
+        if row:
+            return int(row["id"])
+
+        cursor = self._conn.execute(
+            "INSERT INTO channels (name, created_at) VALUES (?, ?)",
+            (DEFAULT_CHANNEL_NAME, utc_timestamp()),
+        )
+        return int(cursor.lastrowid)
+
+    def _channel_exists_locked(self, channel_id: int) -> bool:
+        row = self._conn.execute(
+            "SELECT 1 FROM channels WHERE id = ?",
+            (channel_id,),
+        ).fetchone()
+        return row is not None
+
+    def default_channel_id(self) -> int:
+        with self._lock:
+            return self._ensure_default_channel_locked()
+
+    def list_channels(self) -> list[dict[str, object]]:
         with self._lock:
             rows = self._conn.execute(
                 """
-                SELECT id, body, created_at
-                FROM messages
-                ORDER BY id DESC
-                LIMIT ?
-                """,
-                (limit,),
+                SELECT
+                    c.id,
+                    c.name,
+                    c.created_at,
+                    COUNT(m.id) AS message_count
+                FROM channels c
+                LEFT JOIN messages m ON m.channel_id = c.id
+                GROUP BY c.id
+                ORDER BY c.id ASC
+                """
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def create_message(self, body: str) -> dict[str, object]:
-        created_at = (
-            datetime.now(timezone.utc)
-            .isoformat(timespec="seconds")
-            .replace("+00:00", "Z")
-        )
+    def create_channel(self, name: str) -> tuple[dict[str, object] | None, str | None]:
+        normalized = normalize_channel_name(name)
+        if not normalized:
+            return None, "empty_channel_name"
+        if len(normalized) > MAX_CHANNEL_NAME_CHARS:
+            return None, "channel_name_too_long"
+
         with self._lock:
+            try:
+                cursor = self._conn.execute(
+                    "INSERT INTO channels (name, created_at) VALUES (?, ?)",
+                    (normalized, utc_timestamp()),
+                )
+                self._conn.commit()
+            except sqlite3.IntegrityError:
+                return None, "channel_exists"
+
+            row = self._conn.execute(
+                """
+                SELECT
+                    c.id,
+                    c.name,
+                    c.created_at,
+                    COUNT(m.id) AS message_count
+                FROM channels c
+                LEFT JOIN messages m ON m.channel_id = c.id
+                WHERE c.id = ?
+                GROUP BY c.id
+                """,
+                (cursor.lastrowid,),
+            ).fetchone()
+        return dict(row), None
+
+    def delete_channel(self, channel_id: int) -> str | None:
+        with self._lock:
+            if not self._channel_exists_locked(channel_id):
+                return "not_found"
+
+            channel_count = self._conn.execute(
+                "SELECT COUNT(*) AS count FROM channels",
+            ).fetchone()["count"]
+            if int(channel_count) <= 1:
+                return "last_channel"
+
+            with self._conn:
+                self._conn.execute(
+                    "DELETE FROM messages WHERE channel_id = ?",
+                    (channel_id,),
+                )
+                self._conn.execute(
+                    "DELETE FROM channels WHERE id = ?",
+                    (channel_id,),
+                )
+        return None
+
+    def list_messages(
+        self,
+        channel_id: int,
+        limit: int = 200,
+    ) -> tuple[list[dict[str, object]] | None, str | None]:
+        with self._lock:
+            if not self._channel_exists_locked(channel_id):
+                return None, "channel_not_found"
+
+            rows = self._conn.execute(
+                """
+                SELECT id, channel_id, body, created_at
+                FROM messages
+                WHERE channel_id = ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (channel_id, limit),
+            ).fetchall()
+        return [dict(row) for row in rows], None
+
+    def create_message(
+        self,
+        body: str,
+        channel_id: int,
+    ) -> tuple[dict[str, object] | None, str | None]:
+        with self._lock:
+            if not self._channel_exists_locked(channel_id):
+                return None, "channel_not_found"
+
             cursor = self._conn.execute(
-                "INSERT INTO messages (body, created_at) VALUES (?, ?)",
-                (body, created_at),
+                """
+                INSERT INTO messages (channel_id, body, created_at)
+                VALUES (?, ?, ?)
+                """,
+                (channel_id, body, utc_timestamp()),
             )
             self._conn.commit()
             row = self._conn.execute(
-                "SELECT id, body, created_at FROM messages WHERE id = ?",
+                """
+                SELECT id, channel_id, body, created_at
+                FROM messages
+                WHERE id = ?
+                """,
                 (cursor.lastrowid,),
             ).fetchone()
-        return dict(row)
+        return dict(row), None
 
     def delete_message(self, message_id: int) -> bool:
         with self._lock:
@@ -189,11 +349,14 @@ def make_handler(store: MessageStore, events: EventHub, log_requests: bool):
             print(f"{self.address_string()} - {fmt % args}")
 
         def do_GET(self) -> None:
-            path = urlparse(self.path).path
+            parsed = urlparse(self.path)
+            path = parsed.path
             if path == "/":
                 self._serve_file(APP_DIR / "index.html", cache=False)
+            elif path == "/api/channels":
+                self._send_json({"channels": store.list_channels()}, cache=False)
             elif path == "/api/messages":
-                self._send_json({"messages": store.list_messages()}, cache=False)
+                self._send_messages(parsed.query)
             elif path == "/events":
                 self._serve_events()
             elif path == "/health":
@@ -207,11 +370,14 @@ def make_handler(store: MessageStore, events: EventHub, log_requests: bool):
                 self._send_json({"error": "not_found"}, status=404, cache=False)
 
         def do_HEAD(self) -> None:
-            path = urlparse(self.path).path
+            parsed = urlparse(self.path)
+            path = parsed.path
             if path == "/":
                 self._serve_file(APP_DIR / "index.html", cache=False, head_only=True)
+            elif path == "/api/channels":
+                self._send_json({"channels": store.list_channels()}, cache=False, head_only=True)
             elif path == "/api/messages":
-                self._send_json({"messages": store.list_messages()}, cache=False, head_only=True)
+                self._send_messages(parsed.query, head_only=True)
             elif path == "/health":
                 self._send_json({"ok": True}, cache=False, head_only=True)
             elif path == "/favicon.ico":
@@ -224,6 +390,26 @@ def make_handler(store: MessageStore, events: EventHub, log_requests: bool):
 
         def do_POST(self) -> None:
             path = urlparse(self.path).path
+            if path == "/api/channels":
+                data = self._read_json()
+                if data is None:
+                    return
+
+                name = data.get("name")
+                if not isinstance(name, str):
+                    self._send_json({"error": "name_must_be_text"}, status=400, cache=False)
+                    return
+
+                channel, error = store.create_channel(name)
+                if error:
+                    status = 409 if error == "channel_exists" else 422
+                    self._send_json({"error": error}, status=status, cache=False)
+                    return
+
+                events.publish({"type": "channel_created", "channel": channel})
+                self._send_json({"channel": channel}, status=201, cache=False)
+                return
+
             if path != "/api/messages":
                 self._send_json({"error": "not_found"}, status=404, cache=False)
                 return
@@ -240,30 +426,105 @@ def make_handler(store: MessageStore, events: EventHub, log_requests: bool):
                 self._send_json({"error": "empty_message"}, status=422, cache=False)
                 return
 
-            message = store.create_message(body)
-            events.publish({"type": "created", "message": message})
+            channel_id = self._channel_id_from_payload(data)
+            if channel_id is None:
+                return
+
+            message, error = store.create_message(body, channel_id)
+            if error:
+                self._send_json({"error": error}, status=404, cache=False)
+                return
+
+            events.publish(
+                {
+                    "type": "message_created",
+                    "channel_id": channel_id,
+                    "message": message,
+                }
+            )
             self._send_json({"message": message}, status=201, cache=False)
 
         def do_DELETE(self) -> None:
             path = urlparse(self.path).path
-            prefix = "/api/messages/"
-            if not path.startswith(prefix):
+            channel_prefix = "/api/channels/"
+            if path.startswith(channel_prefix):
+                channel_id = self._resource_id(path, channel_prefix, "invalid_channel_id")
+                if channel_id is None:
+                    return
+
+                error = store.delete_channel(channel_id)
+                if error == "not_found":
+                    self._send_json({"error": "not_found"}, status=404, cache=False)
+                    return
+                if error == "last_channel":
+                    self._send_json({"error": "cannot_delete_last_channel"}, status=409, cache=False)
+                    return
+
+                events.publish({"type": "channel_deleted", "id": channel_id})
+                self._send_json({"ok": True}, cache=False)
+                return
+
+            message_prefix = "/api/messages/"
+            if not path.startswith(message_prefix):
                 self._send_json({"error": "not_found"}, status=404, cache=False)
                 return
 
-            raw_id = path[len(prefix) :]
-            if not raw_id.isdigit():
-                self._send_json({"error": "invalid_message_id"}, status=400, cache=False)
+            message_id = self._resource_id(path, message_prefix, "invalid_message_id")
+            if message_id is None:
                 return
 
-            message_id = int(raw_id)
             deleted = store.delete_message(message_id)
             if not deleted:
                 self._send_json({"error": "not_found"}, status=404, cache=False)
                 return
 
-            events.publish({"type": "deleted", "id": message_id})
+            events.publish({"type": "message_deleted", "id": message_id})
             self._send_json({"ok": True}, cache=False)
+
+        def _send_messages(self, query: str, head_only: bool = False) -> None:
+            channel_id = self._channel_id_from_query(query)
+            if channel_id is None:
+                return
+
+            messages, error = store.list_messages(channel_id)
+            if error:
+                self._send_json({"error": error}, status=404, cache=False, head_only=head_only)
+                return
+
+            self._send_json({"messages": messages}, cache=False, head_only=head_only)
+
+        def _channel_id_from_query(self, query: str) -> int | None:
+            params = parse_qs(query)
+            raw_values = params.get("channel_id", [])
+            if not raw_values or raw_values[0] == "":
+                return store.default_channel_id()
+            return self._positive_int(raw_values[0], "invalid_channel_id")
+
+        def _channel_id_from_payload(self, payload: dict[str, object]) -> int | None:
+            raw_id = payload.get("channel_id")
+            if raw_id is None or raw_id == "":
+                return store.default_channel_id()
+            return self._positive_int(raw_id, "invalid_channel_id")
+
+        def _resource_id(self, path: str, prefix: str, error: str) -> int | None:
+            raw_id = path[len(prefix) :]
+            return self._positive_int(raw_id, error)
+
+        def _positive_int(self, value: object, error: str) -> int | None:
+            if isinstance(value, bool):
+                self._send_json({"error": error}, status=400, cache=False)
+                return None
+
+            try:
+                parsed = int(value)
+            except (TypeError, ValueError):
+                self._send_json({"error": error}, status=400, cache=False)
+                return None
+
+            if parsed < 1:
+                self._send_json({"error": error}, status=400, cache=False)
+                return None
+            return parsed
 
         def _read_json(self) -> dict[str, object] | None:
             try:

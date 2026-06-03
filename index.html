@@ -8,42 +8,84 @@
     <script src="/static/app.js" defer></script>
   </head>
   <body>
-    <main class="shell">
-      <header class="topbar">
-        <div class="brand">
-          <h1>Motehold</h1>
-          <div class="connection" aria-live="polite">
-            <span class="connection-dot" aria-hidden="true"></span>
-            <span id="connectionLabel">Live</span>
+    <div class="app-shell" id="appShell">
+      <aside class="sidebar" id="sidebar" aria-label="Channels">
+        <div class="sidebar-header">
+          <div class="sidebar-title">Channels</div>
+          <div class="sidebar-tools">
+            <button class="icon-button compact" id="showChannelFormButton" type="button" title="New channel" aria-label="New channel">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 5v14"></path>
+                <path d="M5 12h14"></path>
+              </svg>
+            </button>
+            <button class="icon-button compact" id="sidebarCloseButton" type="button" title="Collapse channels" aria-label="Collapse channels">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M15 18 9 12l6-6"></path>
+              </svg>
+            </button>
           </div>
         </div>
-        <button class="icon-button" id="refreshButton" type="button" title="Refresh" aria-label="Refresh messages">
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M21 12a9 9 0 0 1-15.3 6.4"></path>
-            <path d="M3 12A9 9 0 0 1 18.3 5.6"></path>
-            <path d="M18 2v4h4"></path>
-            <path d="M6 22v-4H2"></path>
-          </svg>
-        </button>
-      </header>
 
-      <section class="composer">
-        <form id="noteForm" autocomplete="off">
-          <textarea id="noteInput" name="note" rows="4" maxlength="262144" placeholder="Paste or type a note" autofocus></textarea>
-          <button class="send-button" id="sendButton" type="submit">
-            <span>Send</span>
+        <form class="channel-form" id="channelForm" autocomplete="off" hidden>
+          <input id="channelInput" name="channel" maxlength="40" placeholder="Channel name" aria-label="Channel name">
+          <button class="icon-button compact" id="saveChannelButton" type="submit" title="Create channel" aria-label="Create channel">
             <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="m22 2-7 20-4-9-9-4Z"></path>
-              <path d="M22 2 11 13"></path>
+              <path d="M20 6 9 17l-5-5"></path>
             </svg>
           </button>
         </form>
-      </section>
 
-      <section class="feed" aria-label="Messages">
-        <div class="empty" id="emptyState" hidden>No messages yet.</div>
-        <div class="message-list" id="messageList"></div>
-      </section>
-    </main>
+        <nav class="channel-list" id="channelList" aria-label="Channels"></nav>
+      </aside>
+
+      <main class="shell">
+        <header class="topbar">
+          <div class="brand-row">
+            <button class="icon-button" id="sidebarToggleButton" type="button" title="Toggle channels" aria-label="Toggle channels">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 5h16"></path>
+                <path d="M4 12h16"></path>
+                <path d="M4 19h16"></path>
+              </svg>
+            </button>
+            <div class="brand">
+              <h1>Motehold</h1>
+              <div class="channel-heading" id="channelHeading"></div>
+              <div class="connection" aria-live="polite">
+                <span class="connection-dot" aria-hidden="true"></span>
+                <span id="connectionLabel">Live</span>
+              </div>
+            </div>
+          </div>
+          <button class="icon-button" id="refreshButton" type="button" title="Refresh" aria-label="Refresh messages">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M21 12a9 9 0 0 1-15.3 6.4"></path>
+              <path d="M3 12A9 9 0 0 1 18.3 5.6"></path>
+              <path d="M18 2v4h4"></path>
+              <path d="M6 22v-4H2"></path>
+            </svg>
+          </button>
+        </header>
+
+        <section class="composer">
+          <form id="noteForm" autocomplete="off">
+            <textarea id="noteInput" name="note" rows="4" maxlength="262144" placeholder="Paste or type a note" autofocus></textarea>
+            <button class="send-button" id="sendButton" type="submit">
+              <span>Send</span>
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="m22 2-7 20-4-9-9-4Z"></path>
+                <path d="M22 2 11 13"></path>
+              </svg>
+            </button>
+          </form>
+        </section>
+
+        <section class="feed" aria-label="Messages">
+          <div class="empty" id="emptyState" hidden>No messages yet.</div>
+          <div class="message-list" id="messageList"></div>
+        </section>
+      </main>
+    </div>
   </body>
 </html>

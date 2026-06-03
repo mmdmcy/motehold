@@ -1,6 +1,6 @@
 # Motehold
 
-Motehold is a tiny private note board for a trusted local network. It serves one HTML page, a small JSON API, server-sent events for live updates, and a SQLite database for stored messages.
+Motehold is a tiny private channel-based note board for a trusted local network. It serves one HTML page, a small JSON API, server-sent events for live updates, and a SQLite database for stored messages.
 
 It is designed for personal use on a private LAN, VPN, or tailnet. It does not include authentication, so do not expose it directly to the public internet.
 
@@ -8,6 +8,9 @@ It is designed for personal use on a private LAN, VPN, or tailnet. It does not i
 
 - Single-file Python server with no package dependencies.
 - SQLite message storage.
+- Create and delete channels.
+- Store messages inside specific channels.
+- Collapsible channel sidebar.
 - Live updates with server-sent events.
 - Copy and delete actions for each note.
 - Gray dark theme for phone readability.
