@@ -1,52 +1,52 @@
 # Motehold
 
-Motehold is a tiny private channel-based note board for a trusted local network. It serves one HTML page, a small JSON API, server-sent events for live updates, and a SQLite database for stored messages.
+Motehold is a private channel-based note board for a trusted local network. It
+now runs as a small Rust web service with SQLite storage.
 
-It is designed for personal use on a private LAN, VPN, or tailnet. It does not include authentication, so do not expose it directly to the public internet.
+It is meant for localhost, LAN, VPN, or tailnet access. It is not a public
+internet app.
 
 ## Features
 
-- Single-file Python server with no package dependencies.
-- SQLite message storage.
-- Create and delete channels.
-- Store messages inside specific channels.
-- Attach PNG, JPEG, GIF, or WebP images up to 5 MB.
-- Collapsible channel sidebar.
-- Live updates with server-sent events.
-- Copy and delete actions for each note.
-- Confirm dialog before deleting messages or channels.
-- Gray dark theme for phone readability.
+- Channels with message history.
+- Optional PNG, JPEG, GIF, or WebP image attachments.
+- SQLite storage.
+- Phone-friendly chat layout.
+- Optional password auth with Argon2 password hashes.
 
 ## Run
 
 ```sh
-cp .env.example .env
-python3 server.py
+cargo run -- serve
 ```
 
-By default, Motehold binds to your Tailscale IPv4 address if the `tailscale` CLI is available. If no Tailscale address is found, it falls back to `127.0.0.1`.
+By default Motehold binds to `127.0.0.1:8787`, stores data in
+`data/motehold.sqlite`, and has auth disabled for trusted local development.
 
-Open the printed URL from another device on the same trusted network.
+For a password-protected instance:
+
+```sh
+cargo run -- hash-password --stdin
+MOTEHOLD_AUTH_DISABLED=0 MOTEHOLD_PASSWORD_HASH='$argon2id$...' cargo run -- serve
+```
 
 ## Configuration
 
-Local configuration lives in `.env`, which is intentionally ignored by Git.
-
-```sh
-MOTEHOLD_HOST=127.0.0.1
-MOTEHOLD_PORT=8787
-MOTEHOLD_DB=.local/messages.db
-MOTEHOLD_LOG_REQUESTS=0
+```text
+MOTEHOLD_BIND=127.0.0.1:8787
+MOTEHOLD_DB=data/motehold.sqlite
+MOTEHOLD_AUTH_DISABLED=1
+MOTEHOLD_PASSWORD_HASH=<argon2 hash>
+MOTEHOLD_COOKIE_SECRET=<random hex, optional>
 ```
 
-You can also pass the same settings as command-line flags:
+Keep real `.env` files, databases, uploads, logs, and host-specific deployment
+state out of this repository.
+
+## Checks
 
 ```sh
-python3 server.py --host 127.0.0.1 --port 8787 --db .local/messages.db
+cargo fmt --check
+cargo test
+cargo run -- audit-public
 ```
-
-Use a private interface or VPN address for trusted-network access. Binding to `0.0.0.0` exposes the app on every network interface.
-
-## Public Release Notes
-
-The repository ignores local runtime state, including `.env`, `.local/`, SQLite databases, logs, PID files, and Python bytecode caches. Do not commit your personal database or logs.

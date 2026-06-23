@@ -1,0 +1,19 @@
+[package]
+name = "motehold"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Private channel-based note board for trusted local networks."
+
+[dependencies]
+axum = { version = "0.8", features = ["multipart"] }
+argon2 = "0.5"
+base64 = "0.22"
+chrono = { version = "0.4", features = ["clock", "serde"] }
+hex = "0.4"
+rand = "0.8"
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+sha2 = "0.10"
+subtle = "2"
+tokio = { version = "1", features = ["full"] }
