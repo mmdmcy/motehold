@@ -30,6 +30,8 @@ mod modules;
 const DEFAULT_CHANNEL: &str = "general";
 const MAX_NOTE_CHARS: usize = 256 * 1024;
 const MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024;
+const MAX_ATTACHMENT_BYTES: usize = 512 * 1024;
+const MAX_ATTACHMENT_PREVIEW_CHARS: usize = 8 * 1024;
 const MAX_CHANNEL_CHARS: usize = 40;
 const SESSION_COOKIE: &str = "motehold_session";
 const SESSION_DAYS: i64 = 30;
@@ -294,7 +296,7 @@ async fn notes_page(
                 let body = if note.body.trim().is_empty() {
                     String::new()
                 } else {
-                    format!(r#"<p>{}</p>"#, html_escape(&note.body).replace('\n', "<br>"))
+                    format!(r#"<p class="message-text">{}</p>"#, html_escape(&note.body))
                 };
                 let image = if note.has_image {
                     format!(
@@ -304,18 +306,74 @@ async fn notes_page(
                 } else {
                     String::new()
                 };
+                let attachment = if note.has_attachment {
+                    let name = note
+                        .attachment_name
+                        .as_deref()
+                        .unwrap_or("attachment.md");
+                    let kind = if note
+                        .attachment_type
+                        .as_deref()
+                        .is_some_and(|value| value.starts_with("text/"))
+                    {
+                        "Markdown"
+                    } else {
+                        "File"
+                    };
+                    let preview_notice = if note.attachment_preview_truncated {
+                        r#"<p class="attachment-preview-note">Preview truncated. Download the file to read the rest.</p>"#
+                    } else {
+                        ""
+                    };
+                    let preview = note
+                        .attachment_preview
+                        .as_deref()
+                        .map(|text| {
+                            format!(
+                                r#"<details class="attachment-preview"><summary>Preview file</summary><pre>{}</pre>{preview_notice}</details>"#,
+                                html_escape(text),
+                            )
+                        })
+                        .unwrap_or_default();
+                    format!(
+                        r##"<div class="message-attachment"><a class="attachment-link" href="/notes/attachments/{}" download><span class="attachment-name">{}</span><span class="attachment-kind">{} · download</span></a>{}</div>"##,
+                        note.id,
+                        html_escape(name),
+                        kind,
+                        preview
+                    )
+                } else {
+                    String::new()
+                };
+                let copy_button = if note.body.trim().is_empty() && !note.has_attachment {
+                    String::new()
+                } else {
+                    let attachment_attribute = if note.has_attachment {
+                        format!(
+                            r#" data-copy-attachment="/notes/attachments/{}""#,
+                            note.id
+                        )
+                    } else {
+                        String::new()
+                    };
+                    format!(
+                        r#"<button type="button" class="ghost copy-button" data-copy-note{attachment_attribute}>Copy</button>"#
+                    )
+                };
                 format!(
                     r##"<article class="message">
   <div class="message-avatar">#</div>
   <div class="message-body">
-    <div class="message-meta"><strong>{}</strong><form action="/notes/{}/delete" method="post"><button class="icon danger-icon" type="submit" aria-label="Delete message">x</button></form></div>
-    {}{}
+    <div class="message-meta"><strong>{}</strong><div class="message-actions">{}<form action="/notes/{}/delete" method="post"><button class="icon danger-icon" type="submit" aria-label="Delete message">x</button></form></div></div>
+    {}{}{}
   </div>
 </article>"##,
                     html_escape(&note.channel),
+                    copy_button,
                     note.id,
                     body,
-                    image
+                    image,
+                    attachment
                 )
             })
             .collect::<Vec<_>>()
@@ -345,14 +403,67 @@ async fn notes_page(
     <form action="/notes" method="post" enctype="multipart/form-data" class="composer">
       <input name="channel_id" type="hidden" value="{active_channel_id}">
       <textarea name="body" maxlength="{MAX_NOTE_CHARS}" placeholder="Message #{active_channel_label}"></textarea>
-      <label class="file-pill"><input name="image" type="file" accept="image/png,image/jpeg,image/gif,image/webp"><span>Image</span></label>
+      <label class="file-pill"><input name="attachment" type="file" accept="image/png,image/jpeg,image/gif,image/webp,.md,.markdown,text/markdown,text/plain"><span>Attach file</span></label>
       <button type="submit">Send</button>
     </form>
   </section>
 </main>
 <script>
 const messages = document.querySelector(".message-list");
-if (messages) messages.scrollTop = messages.scrollHeight;
+if (messages) {{
+  const scrollToLatest = () => {{
+    messages.scrollTop = messages.scrollHeight;
+  }};
+  requestAnimationFrame(scrollToLatest);
+  window.addEventListener("load", scrollToLatest);
+}}
+const attachmentInput = document.querySelector(".file-pill input");
+const attachmentLabel = document.querySelector(".file-pill span");
+if (attachmentInput && attachmentLabel) {{
+  const defaultLabel = attachmentLabel.textContent;
+  attachmentInput.addEventListener("change", () => {{
+    const file = attachmentInput.files && attachmentInput.files[0];
+    attachmentLabel.textContent = file ? file.name : defaultLabel;
+  }});
+}}
+document.querySelectorAll("[data-copy-note]").forEach((button) => {{
+  button.addEventListener("click", async () => {{
+    const originalLabel = button.textContent;
+    let copied = false;
+    button.disabled = true;
+    try {{
+      const message = button.closest(".message");
+      const body = message?.querySelector(".message-text")?.textContent || "";
+      const attachmentUrl = button.getAttribute("data-copy-attachment") || "";
+      let attachment = "";
+      if (attachmentUrl) {{
+        const response = await fetch(attachmentUrl, {{cache: "no-store"}});
+        if (!response.ok) throw new Error("attachment fetch failed");
+        attachment = await response.text();
+      }}
+      const text = [body, attachment].filter((value) => value.length > 0).join("\n\n");
+      if (navigator.clipboard && window.isSecureContext) {{
+        await navigator.clipboard.writeText(text);
+        copied = true;
+      }} else {{
+        const fallback = document.createElement("textarea");
+        fallback.value = text;
+        fallback.setAttribute("readonly", "");
+        fallback.style.position = "fixed";
+        fallback.style.opacity = "0";
+        document.body.appendChild(fallback);
+        fallback.select();
+        try {{ copied = document.execCommand("copy"); }} catch (_) {{}}
+        fallback.remove();
+      }}
+    }} catch (_) {{}}
+    button.textContent = copied ? "Copied" : "Copy failed";
+    window.setTimeout(() => {{
+      button.textContent = originalLabel;
+      button.disabled = false;
+    }}, 1400);
+  }});
+}});
 </script>
 "#
         ),
@@ -409,8 +520,11 @@ async fn note_create(
     }
     let mut channel_id = None;
     let mut body = String::new();
-    let mut image_type = None;
-    let mut image_data = None;
+    let mut image_type: Option<String> = None;
+    let mut image_data: Option<Vec<u8>> = None;
+    let mut attachment_name: Option<String> = None;
+    let mut attachment_type: Option<String> = None;
+    let mut attachment_data: Option<Vec<u8>> = None;
 
     while let Ok(Some(field)) = multipart.next_field().await {
         let name = field.name().unwrap_or("").to_string();
@@ -425,24 +539,41 @@ async fn note_create(
                     body = text;
                 }
             }
-            "image" => {
+            "image" | "attachment" => {
+                let file_name = field.file_name().map(str::to_string);
                 let content_type = field.content_type().map(str::to_string);
+                let Ok(bytes) = field.bytes().await else {
+                    continue;
+                };
                 if content_type.as_deref().is_some_and(allowed_image_type)
-                    && let Ok(bytes) = field.bytes().await
                     && !bytes.is_empty()
                     && bytes.len() <= MAX_IMAGE_BYTES
                 {
                     image_type = content_type;
                     image_data = Some(bytes.to_vec());
+                } else if is_markdown_attachment(file_name.as_deref(), content_type.as_deref())
+                    && !bytes.is_empty()
+                    && bytes.len() <= MAX_ATTACHMENT_BYTES
+                    && String::from_utf8(bytes.to_vec()).is_ok()
+                {
+                    attachment_name = Some(
+                        file_name
+                            .filter(|name| !name.trim().is_empty())
+                            .unwrap_or_else(|| "attachment.md".into()),
+                    );
+                    attachment_type = Some("text/markdown; charset=utf-8".into());
+                    attachment_data = Some(bytes.to_vec());
                 }
             }
             _ => {}
         }
     }
 
-    let body = body.trim();
+    let body = body.trim().to_string();
     let channel_id = channel_id.unwrap_or(1);
-    if (!body.is_empty() || image_data.is_some()) && body.len() <= MAX_NOTE_CHARS {
+    if (!body.is_empty() || image_data.is_some() || attachment_data.is_some())
+        && body.len() <= MAX_NOTE_CHARS
+    {
         let db = state.db.lock().unwrap();
         let exists = db
             .query_row(
@@ -455,8 +586,17 @@ async fn note_create(
             .is_some();
         if exists {
             let _ = db.execute(
-                "INSERT INTO notes (channel_id, body, image_type, image_data, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![channel_id, body, image_type, image_data, Utc::now().to_rfc3339()],
+                "INSERT INTO notes (channel_id, body, image_type, image_data, attachment_name, attachment_type, attachment_data, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    channel_id,
+                    body,
+                    image_type,
+                    image_data,
+                    attachment_name,
+                    attachment_type,
+                    attachment_data,
+                    Utc::now().to_rfc3339()
+                ],
             );
         }
     }
@@ -523,6 +663,50 @@ async fn note_image(
         .into_response()
 }
 
+async fn note_attachment(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    AxumPath(id): AxumPath<i64>,
+) -> Response {
+    if let Some(response) = raw_guard(&state, &headers) {
+        return response;
+    }
+    let row = {
+        let db = state.db.lock().unwrap();
+        db.query_row(
+            "SELECT attachment_name, attachment_data FROM notes WHERE id = ?1 AND attachment_data IS NOT NULL",
+            params![id],
+            |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, Vec<u8>>(1)?)),
+        )
+        .optional()
+        .unwrap_or(None)
+    };
+    let Some((name, bytes)) = row else {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    };
+    if bytes.len() > MAX_ATTACHMENT_BYTES {
+        return (StatusCode::PAYLOAD_TOO_LARGE, "attachment too large").into_response();
+    }
+    let filename = safe_attachment_filename(name.as_deref().unwrap_or("attachment.md"));
+    let disposition = format!("attachment; filename=\"{filename}\"");
+    (
+        StatusCode::OK,
+        [
+            (
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("text/markdown; charset=utf-8"),
+            ),
+            (
+                header::CONTENT_DISPOSITION,
+                HeaderValue::from_str(&disposition).unwrap(),
+            ),
+            (header::CACHE_CONTROL, HeaderValue::from_static("no-store")),
+        ],
+        bytes,
+    )
+        .into_response()
+}
+
 #[derive(Debug)]
 struct ChannelRow {
     id: i64,
@@ -535,6 +719,11 @@ struct NoteRow {
     channel: String,
     body: String,
     has_image: bool,
+    has_attachment: bool,
+    attachment_name: Option<String>,
+    attachment_type: Option<String>,
+    attachment_preview: Option<String>,
+    attachment_preview_truncated: bool,
 }
 
 fn list_channels(db: &Connection) -> rusqlite::Result<Vec<ChannelRow>> {
@@ -550,11 +739,15 @@ fn list_channels(db: &Connection) -> rusqlite::Result<Vec<ChannelRow>> {
 
 fn list_notes(db: &Connection, channel: Option<i64>) -> rusqlite::Result<Vec<NoteRow>> {
     let sql = if channel.is_some() {
-        "SELECT n.id, c.name, n.body, n.image_data IS NOT NULL FROM notes n JOIN channels c ON c.id = n.channel_id WHERE n.channel_id = ?1 ORDER BY n.id DESC LIMIT 200"
+        format!(
+            "SELECT n.id, c.name, n.body, n.image_data IS NOT NULL, n.attachment_name, n.attachment_type, n.attachment_data IS NOT NULL, substr(CAST(n.attachment_data AS TEXT), 1, {MAX_ATTACHMENT_PREVIEW_CHARS}), length(CAST(n.attachment_data AS TEXT)) > {MAX_ATTACHMENT_PREVIEW_CHARS} FROM notes n JOIN channels c ON c.id = n.channel_id WHERE n.channel_id = ?1 ORDER BY n.id DESC LIMIT 200"
+        )
     } else {
-        "SELECT n.id, c.name, n.body, n.image_data IS NOT NULL FROM notes n JOIN channels c ON c.id = n.channel_id ORDER BY n.id DESC LIMIT 200"
+        format!(
+            "SELECT n.id, c.name, n.body, n.image_data IS NOT NULL, n.attachment_name, n.attachment_type, n.attachment_data IS NOT NULL, substr(CAST(n.attachment_data AS TEXT), 1, {MAX_ATTACHMENT_PREVIEW_CHARS}), length(CAST(n.attachment_data AS TEXT)) > {MAX_ATTACHMENT_PREVIEW_CHARS} FROM notes n JOIN channels c ON c.id = n.channel_id ORDER BY n.id DESC LIMIT 200"
+        )
     };
-    let mut stmt = db.prepare(sql)?;
+    let mut stmt = db.prepare(&sql)?;
     let rows = if let Some(channel) = channel {
         stmt.query_map(params![channel], note_from_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?
@@ -571,6 +764,11 @@ fn note_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<NoteRow> {
         channel: row.get(1)?,
         body: row.get(2)?,
         has_image: row.get::<_, i64>(3)? != 0,
+        has_attachment: row.get::<_, i64>(6)? != 0,
+        attachment_name: row.get(4)?,
+        attachment_type: row.get(5)?,
+        attachment_preview: row.get(7)?,
+        attachment_preview_truncated: row.get::<_, Option<i64>>(8)?.unwrap_or(0) != 0,
     })
 }
 
@@ -586,6 +784,37 @@ fn allowed_image_type(value: &str) -> bool {
         value,
         "image/png" | "image/jpeg" | "image/gif" | "image/webp"
     )
+}
+
+fn is_markdown_attachment(file_name: Option<&str>, content_type: Option<&str>) -> bool {
+    let has_markdown_extension = file_name
+        .and_then(|name| name.rsplit_once('.').map(|(_, extension)| extension))
+        .is_some_and(|extension| {
+            matches!(extension.to_ascii_lowercase().as_str(), "md" | "markdown")
+        });
+    let is_markdown_type = content_type
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|value| matches!(value.trim(), "text/markdown" | "text/plain"));
+    has_markdown_extension || is_markdown_type
+}
+
+fn safe_attachment_filename(value: &str) -> String {
+    let sanitized = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    let sanitized = sanitized.trim_matches(|ch: char| ch == '.' || ch == '_');
+    if sanitized.is_empty() {
+        "attachment.md".into()
+    } else {
+        sanitized.chars().take(120).collect()
+    }
 }
 
 fn page(title: &str, body: &str) -> Response {
@@ -1139,5 +1368,64 @@ mod tests {
         assert!(audit_path(".env").is_some());
         assert!(audit_path("data/motehold.sqlite").is_some());
         assert!(audit_path("src/main.rs").is_none());
+    }
+
+    #[test]
+    fn markdown_attachment_accepts_md_files_and_text_types() {
+        assert!(is_markdown_attachment(Some("README.MD"), None));
+        assert!(is_markdown_attachment(
+            None,
+            Some("text/markdown; charset=utf-8")
+        ));
+        assert!(is_markdown_attachment(None, Some("text/plain")));
+        assert!(!is_markdown_attachment(
+            Some("photo.png"),
+            Some("image/png")
+        ));
+    }
+
+    #[test]
+    fn attachment_filename_is_safe_for_response_headers() {
+        assert_eq!(
+            safe_attachment_filename("../meeting notes.md"),
+            "meeting_notes.md"
+        );
+        assert_eq!(safe_attachment_filename("..."), "attachment.md");
+    }
+
+    #[test]
+    fn note_listing_caps_attachment_preview_but_preserves_full_download() {
+        let db = Connection::open_in_memory().unwrap();
+        db_migrations::migrate(&db).unwrap();
+        db.execute(
+            "INSERT INTO channels (name, created_at) VALUES ('general', 'now')",
+            [],
+        )
+        .unwrap();
+        let channel_id = db.last_insert_rowid();
+        let attachment = "é".repeat(MAX_ATTACHMENT_PREVIEW_CHARS + 64);
+        db.execute(
+            "INSERT INTO notes (channel_id, body, attachment_name, attachment_type, attachment_data, created_at) VALUES (?1, '', 'notes.md', 'text/markdown; charset=utf-8', ?2, 'now')",
+            params![channel_id, attachment.as_bytes()],
+        )
+        .unwrap();
+
+        let notes = list_notes(&db, Some(channel_id)).unwrap();
+        assert_eq!(notes.len(), 1);
+        let note = &notes[0];
+        assert_eq!(
+            note.attachment_preview.as_deref().unwrap().chars().count(),
+            MAX_ATTACHMENT_PREVIEW_CHARS
+        );
+        assert!(note.attachment_preview_truncated);
+
+        let stored: Vec<u8> = db
+            .query_row(
+                "SELECT attachment_data FROM notes WHERE id = ?1",
+                params![note.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, attachment.as_bytes());
     }
 }

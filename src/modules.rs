@@ -6,7 +6,7 @@ use axum::{
 
 use std::sync::Arc;
 
-use crate::{AppState, MAX_IMAGE_BYTES, MAX_NOTE_CHARS};
+use crate::{AppState, MAX_ATTACHMENT_BYTES, MAX_IMAGE_BYTES, MAX_NOTE_CHARS};
 
 pub(crate) fn build_router(state: Arc<AppState>) -> Router {
     Router::new()
@@ -18,8 +18,9 @@ pub(crate) fn build_router(state: Arc<AppState>) -> Router {
         .route("/notes/channels/{id}/delete", post(crate::channel_delete))
         .route("/notes/{id}/delete", post(crate::note_delete))
         .route("/notes/images/{id}", get(crate::note_image))
+        .route("/notes/attachments/{id}", get(crate::note_attachment))
         .layer(DefaultBodyLimit::max(
-            MAX_IMAGE_BYTES + MAX_NOTE_CHARS + 1024 * 1024,
+            MAX_IMAGE_BYTES + MAX_NOTE_CHARS + MAX_ATTACHMENT_BYTES + 1024 * 1024,
         ))
         .with_state(state)
 }

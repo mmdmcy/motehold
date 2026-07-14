@@ -1,6 +1,6 @@
 use rusqlite::{Connection, params};
 
-pub const LATEST_SCHEMA_VERSION: i64 = 1;
+pub const LATEST_SCHEMA_VERSION: i64 = 2;
 
 const BASE_SCHEMA: &str = r#"
 PRAGMA foreign_keys = ON;
@@ -22,6 +22,12 @@ CREATE TABLE IF NOT EXISTS notes (
 CREATE INDEX IF NOT EXISTS idx_notes_channel_id ON notes(channel_id);
 "#;
 
+const MARKDOWN_ATTACHMENT_MIGRATION: &str = r#"
+ALTER TABLE notes ADD COLUMN attachment_name TEXT;
+ALTER TABLE notes ADD COLUMN attachment_type TEXT;
+ALTER TABLE notes ADD COLUMN attachment_data BLOB;
+"#;
+
 pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         r#"
@@ -37,6 +43,10 @@ pub fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     if current < 1 {
         conn.execute_batch(BASE_SCHEMA)?;
         record_migration(conn, 1)?;
+    }
+    if current < 2 {
+        conn.execute_batch(MARKDOWN_ATTACHMENT_MIGRATION)?;
+        record_migration(conn, 2)?;
     }
     debug_assert!(current_version(conn)? >= LATEST_SCHEMA_VERSION);
     Ok(())
@@ -85,5 +95,50 @@ mod tests {
         assert!(tables.contains(&"notes".into()));
         assert!(!tables.contains(&"agent_slots".into()));
         assert!(!tables.contains(&"download_cache".into()));
+    }
+
+    #[test]
+    fn migrate_adds_attachment_columns() {
+        let db = Connection::open_in_memory().unwrap();
+        migrate(&db).unwrap();
+
+        let columns = db
+            .prepare("PRAGMA table_info(notes)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert!(columns.contains(&"attachment_name".into()));
+        assert!(columns.contains(&"attachment_type".into()));
+        assert!(columns.contains(&"attachment_data".into()));
+    }
+
+    #[test]
+    fn migration_two_preserves_existing_notes() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(BASE_SCHEMA).unwrap();
+        db.execute_batch(
+            r#"
+            CREATE TABLE schema_migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            INSERT INTO schema_migrations (version) VALUES (1);
+            INSERT INTO channels (name, created_at) VALUES ('general', 'now');
+            INSERT INTO notes (channel_id, body, created_at)
+                SELECT id, 'keep me', 'now' FROM channels WHERE name = 'general';
+            "#,
+        )
+        .unwrap();
+
+        migrate(&db).unwrap();
+
+        let body: String = db
+            .query_row("SELECT body FROM notes", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(body, "keep me");
+        assert_eq!(current_version(&db).unwrap(), LATEST_SCHEMA_VERSION);
     }
 }

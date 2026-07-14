@@ -1,7 +1,7 @@
 :root{color-scheme:light dark;--bg:#f6f7f5;--fg:#161816;--muted:#68706a;--line:#d7dcd5;--panel:#fff;--accent:#0d6b57;--accent-soft:#e3f1ec;--accent2:#315f9f;--danger:#ad2f28}
 @media(prefers-color-scheme:dark){:root{--bg:#101211;--fg:#f4f5ef;--muted:#a2aaa4;--line:#323934;--panel:#171b18;--accent:#55b59c;--accent-soft:#19362f;--accent2:#8fb5f2;--danger:#ff8a7d}}
 *{box-sizing:border-box}
-html,body{min-height:100%}
+html,body{height:100%;min-height:100%}
 body{margin:0;background:var(--bg);color:var(--fg);font:15px system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;letter-spacing:0}
 a{color:inherit;text-decoration:none}
 button,input,textarea{font:inherit;font-size:16px}
@@ -15,7 +15,7 @@ nav{height:64px;display:flex;align-items:center;justify-content:space-between;ga
 nav a{color:var(--accent2);font-weight:700}
 h1{font-size:28px;line-height:1.1;margin:0}
 main{width:min(1180px,calc(100% - 32px));margin:0 auto;padding:18px 0}
-.chat-shell{height:calc(100svh - 64px);padding:12px 0;display:grid;grid-template-columns:240px minmax(0,1fr);gap:12px;min-width:0}
+.chat-shell{height:calc(100dvh - 64px);padding:12px 0;display:grid;grid-template-columns:240px minmax(0,1fr);gap:12px;min-width:0}
 .channel-rail,.chat-pane{min-width:0;min-height:0;border:1px solid var(--line);background:var(--panel);border-radius:8px}
 .channel-rail{padding:12px;display:flex;flex-direction:column;gap:10px;overflow:hidden}
 .rail-title{font-size:12px;font-weight:800;color:var(--muted);text-transform:uppercase}
@@ -32,20 +32,33 @@ main{width:min(1180px,calc(100% - 32px));margin:0 auto;padding:18px 0}
 .chat-head{min-height:54px;display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:8px;padding:8px 16px;border-bottom:1px solid var(--line)}
 .chat-head strong{font-size:17px}
 .chat-head span,.muted{color:var(--muted)}
-.message-list{min-height:0;overflow:auto;padding:16px;display:grid;align-content:end;gap:2px}
-.message{display:grid;grid-template-columns:38px minmax(0,1fr);gap:10px;padding:8px 0}
+.message-list{min-height:0;overflow-x:hidden;overflow-y:scroll;scrollbar-gutter:stable;padding:16px;display:flex;flex-direction:column;gap:10px;scrollbar-color:var(--muted) transparent;scrollbar-width:thin}
+.message-list::-webkit-scrollbar{width:12px}
+.message-list::-webkit-scrollbar-thumb{background:var(--muted);border:3px solid var(--panel);border-radius:999px}
+.message{display:grid;grid-template-columns:38px minmax(0,1fr);gap:10px;padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--panel);box-shadow:0 1px 2px rgba(0,0,0,.05)}
+.message:focus-within{border-color:var(--accent)}
 .message-avatar{width:38px;height:38px;border-radius:50%;display:grid;place-items:center;background:var(--accent-soft);color:var(--accent);font-weight:900}
 .message-body{min-width:0}
 .message-meta{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:34px}
-.message-meta form{opacity:0}
-.message:hover .message-meta form,.message:focus-within .message-meta form{opacity:1}
-.message p{margin:4px 0 0;white-space:normal;word-break:break-word;line-height:1.45}
+.message-actions{display:flex;align-items:center;gap:6px}
+.message-actions form{margin:0}
+.copy-button{min-height:32px;padding:0 10px;font-size:13px}
+.message-text{margin:4px 0 0;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;line-height:1.45}
 .message-image{display:block;max-width:min(420px,100%);border-radius:6px;border:1px solid var(--line);margin-top:8px}
-.empty{align-self:center;justify-self:center;color:var(--muted);text-align:center}
+.message-attachment{margin-top:10px;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--bg)}
+.attachment-link{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 10px;color:var(--accent2);font-weight:800}
+.attachment-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.attachment-kind{flex:0 0 auto;color:var(--muted);font-size:12px;font-weight:600}
+.attachment-preview{border-top:1px solid var(--line)}
+.attachment-preview summary{padding:8px 10px;color:var(--muted);font-size:13px;font-weight:700;cursor:pointer}
+.attachment-preview pre{max-height:280px;overflow:auto;margin:0;padding:10px;border-top:1px solid var(--line);white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.45 ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace}
+.attachment-preview-note{margin:0;padding:8px 10px;border-top:1px solid var(--line);color:var(--muted);font-size:12px;font-weight:700}
+.empty{margin:auto;color:var(--muted);text-align:center}
 .composer{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:8px;padding:12px;border-top:1px solid var(--line);background:var(--panel);min-width:0}
 .composer textarea{min-height:46px;max-height:36svh;resize:vertical}
 .composer button{white-space:nowrap}
 .file-pill{position:relative;min-height:42px;border:1px solid var(--line);border-radius:7px;padding:0 13px;display:flex;align-items:center;justify-content:center;color:var(--fg);font-weight:700;cursor:pointer;overflow:hidden}
+.file-pill span{max-width:22ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .file-pill input{position:absolute;inset:0;opacity:0;cursor:pointer}
 .login{width:min(420px,calc(100% - 32px));padding-top:72px}
 .login form{display:grid;gap:10px;margin-top:18px}
@@ -69,6 +82,10 @@ main{width:min(1180px,calc(100% - 32px));margin:0 auto;padding:18px 0}
   .message-list{padding:8px 10px}
   .message{grid-template-columns:32px minmax(0,1fr);gap:8px}
   .message-avatar{width:32px;height:32px}
+  .message{padding:10px}
+  .message-meta{align-items:flex-start}
+  .message-actions{gap:4px}
+  .copy-button{padding:0 8px}
   .composer{grid-template-columns:minmax(0,1fr) 88px;padding:10px}
   .composer textarea{grid-column:1/-1;min-height:56px}
 }

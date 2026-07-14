@@ -9,7 +9,10 @@ internet app.
 ## Features
 
 - Channels with message history.
+- Scrollable message cards with one-click copy actions.
 - Optional PNG, JPEG, GIF, or WebP image attachments.
+- Markdown (`.md`/`.markdown`) attachments with a bounded in-chat preview and
+  full copy/download actions.
 - SQLite storage.
 - Phone-friendly chat layout.
 - Optional password auth with Argon2 password hashes.
