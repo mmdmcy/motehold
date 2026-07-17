@@ -1,0 +1,40 @@
+schema_version = "linuxmice.component.v1"
+id = "katteke.motehold"
+display_name = "Motehold"
+version = "0.1.0"
+summary = "Standalone application with optional LinuxMice identity integration."
+component_type = "application"
+standalone = true
+platforms = ["linux"]
+documentation = "https://docs.katteke.com/products/motehold/"
+
+[installation]
+package = "motehold"
+
+[capabilities]
+provides = ["app.motehold"]
+requires = []
+optional = ["identity.oidc"]
+
+[interfaces]
+mode = "loopback-http"
+commands = []
+endpoints = ["http://127.0.0.1:8787/.well-known/linuxmice/component"]
+
+[authentication]
+required = ["local-account"]
+optional = ["oidc"]
+provides = []
+
+[data]
+ownership = "Motehold owns its application records and does not share its database."
+backup_responsibility = "The Motehold operator owns application backup, restore, retention, and export."
+
+[health]
+kind = "http"
+read_only = true
+timeout_ms = 1500
+
+[health.http]
+url = "http://127.0.0.1:8787/.well-known/linuxmice/component"
+expected_status = 200
