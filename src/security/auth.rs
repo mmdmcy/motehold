@@ -3,8 +3,9 @@ use argon2::{
     password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
 };
 use axum::{
-    extract::{Form, State},
-    http::{HeaderMap, HeaderValue, StatusCode, header},
+    extract::{ConnectInfo, Form, Request, State},
+    http::{HeaderMap, HeaderValue, Method, StatusCode, header},
+    middleware::Next,
     response::{IntoResponse, Redirect, Response},
 };
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
@@ -13,9 +14,14 @@ use hmac::{Hmac, Mac};
 use rand::RngCore;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
-use std::{env, io, sync::Arc};
-use subtle::ConstantTimeEq;
+use sha2::Sha256;
+use std::{
+    collections::HashMap,
+    env, io,
+    net::{IpAddr, Ipv6Addr, SocketAddr},
+    sync::{Arc, Mutex},
+    time::{Duration as StdDuration, Instant},
+};
 
 use crate::{
     app::AppState,
@@ -27,6 +33,10 @@ use super::oidc::OidcConfig;
 const SESSION_COOKIE: &str = "motehold_session";
 const LOCAL_SESSION_DAYS: i64 = 30;
 const OIDC_SESSION_HOURS: i64 = 12;
+const LOGIN_FAILURE_LIMIT: usize = 5;
+const LOGIN_FAILURE_WINDOW: StdDuration = StdDuration::from_secs(10 * 60);
+const LOGIN_LIMITER_MAX_ENTRIES: usize = 4096;
+
 #[derive(Clone)]
 pub(crate) struct AuthConfig {
     user: String,
@@ -42,9 +52,16 @@ impl AuthConfig {
         let password_hash = env::var("MOTEHOLD_PASSWORD_HASH")
             .ok()
             .filter(|value| !value.trim().is_empty());
-        let auth_disabled = env_flag("MOTEHOLD_AUTH_DISABLED", true);
+        let auth_disabled = env_flag("MOTEHOLD_AUTH_DISABLED", false);
         let oidc = OidcConfig::from_env()?;
         validate_auth_policy(password_hash.as_deref(), auth_disabled, oidc.as_ref())?;
+        if let Some(oidc) = &oidc
+            && !oidc.restricts_identities()
+        {
+            eprintln!(
+                "warning: MOTEHOLD_OIDC_ALLOWED_SUBJECTS and MOTEHOLD_OIDC_ALLOWED_EMAILS are unset; every identity at the OIDC issuer can log in"
+            );
+        }
 
         let cookie_secure = oidc.as_ref().is_some_and(OidcConfig::uses_secure_cookie)
             || env_flag("MOTEHOLD_COOKIE_SECURE", false);
@@ -98,7 +115,7 @@ fn validate_auth_policy(
 }
 
 pub(crate) async fn login_page(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
-    if authorized(&state, &headers) {
+    if matches!(access(&state, &headers), Access::Granted) {
         return Redirect::to("/").into_response();
     }
     page(
@@ -117,10 +134,10 @@ pub(crate) async fn login_post(
     Form(form): Form<LoginForm>,
 ) -> Response {
     if !verify_password(&state.config.auth, &form.password) {
-        return page(
+        return credential_rejected(page(
             "Motehold Login",
             &login_body(state.config.auth.oidc.is_some(), Some("Wrong password.")),
-        );
+        ));
     }
     let cookie = {
         let db = state.db.lock().unwrap();
@@ -148,41 +165,148 @@ pub(crate) async fn logout_post(
 }
 
 pub(crate) fn page_guard(state: &AppState, headers: &HeaderMap) -> Option<Response> {
-    if authorized(state, headers) {
-        None
-    } else {
-        Some(Redirect::to("/login").into_response())
+    match access(state, headers) {
+        Access::Granted => None,
+        Access::Anonymous => Some(Redirect::to("/login").into_response()),
+        Access::Rejected => Some(credential_rejected(Redirect::to("/login").into_response())),
     }
 }
 
 pub(crate) fn raw_guard(state: &AppState, headers: &HeaderMap) -> Option<Response> {
-    if authorized(state, headers) {
-        None
-    } else {
-        Some((StatusCode::UNAUTHORIZED, "authentication required").into_response())
+    match access(state, headers) {
+        Access::Granted => None,
+        Access::Anonymous => {
+            Some((StatusCode::UNAUTHORIZED, "authentication required").into_response())
+        }
+        Access::Rejected => Some(credential_rejected(
+            (StatusCode::UNAUTHORIZED, "authentication required").into_response(),
+        )),
     }
 }
 
-fn authorized(state: &AppState, headers: &HeaderMap) -> bool {
+enum Access {
+    Granted,
+    /// No credential was presented.
+    Anonymous,
+    /// A password or Basic credential was presented and failed.
+    Rejected,
+}
+
+fn access(state: &AppState, headers: &HeaderMap) -> Access {
     let config = &state.config.auth;
     if config.auth_disabled {
-        return true;
+        return Access::Granted;
     }
     if let Some(value) = headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
         && let Some(raw) = value.strip_prefix("Basic ")
-        && let Ok(decoded) = BASE64.decode(raw.trim())
-        && let Ok(pair) = String::from_utf8(decoded)
-        && let Some((user, password)) = pair.split_once(':')
     {
-        return user == config.user && verify_password(config, password);
+        let accepted = BASE64
+            .decode(raw.trim())
+            .ok()
+            .and_then(|decoded| String::from_utf8(decoded).ok())
+            .and_then(|pair| {
+                pair.split_once(':').map(|(user, password)| {
+                    user == config.user && verify_password(config, password)
+                })
+            })
+            .unwrap_or(false);
+        return if accepted {
+            Access::Granted
+        } else {
+            Access::Rejected
+        };
     }
     let Some(token) = session_cookie_value(headers) else {
-        return false;
+        return Access::Anonymous;
     };
     let db = state.db.lock().unwrap();
-    verify_session(&db, config, token, Utc::now().timestamp()).unwrap_or(false)
+    if verify_session(&db, config, token, Utc::now().timestamp()).unwrap_or(false) {
+        Access::Granted
+    } else {
+        Access::Anonymous
+    }
+}
+
+/// Response marker: a presented credential was rejected, so the throttle
+/// middleware counts a failure for the client address.
+#[derive(Clone, Copy)]
+struct CredentialRejected;
+
+fn credential_rejected(mut response: Response) -> Response {
+    response.extensions_mut().insert(CredentialRejected);
+    response
+}
+
+/// Per-address failed-login counter: after `LOGIN_FAILURE_LIMIT` rejected
+/// credentials within `LOGIN_FAILURE_WINDOW`, further attempts are refused
+/// until the oldest failure leaves the window.
+#[derive(Default)]
+pub(crate) struct LoginLimiter {
+    failures: Mutex<HashMap<IpAddr, Vec<Instant>>>,
+}
+
+impl LoginLimiter {
+    pub(crate) fn is_locked(&self, ip: IpAddr, now: Instant) -> bool {
+        let mut failures = self.failures.lock().unwrap();
+        let Some(entries) = failures.get_mut(&ip) else {
+            return false;
+        };
+        entries.retain(|at| now.duration_since(*at) < LOGIN_FAILURE_WINDOW);
+        if entries.is_empty() {
+            failures.remove(&ip);
+            return false;
+        }
+        entries.len() >= LOGIN_FAILURE_LIMIT
+    }
+
+    pub(crate) fn record_failure(&self, ip: IpAddr, now: Instant) {
+        let mut failures = self.failures.lock().unwrap();
+        if failures.len() >= LOGIN_LIMITER_MAX_ENTRIES {
+            failures.retain(|_, entries| {
+                entries
+                    .iter()
+                    .any(|at| now.duration_since(*at) < LOGIN_FAILURE_WINDOW)
+            });
+        }
+        let entries = failures.entry(ip).or_default();
+        entries.retain(|at| now.duration_since(*at) < LOGIN_FAILURE_WINDOW);
+        entries.push(now);
+    }
+}
+
+/// Middleware: refuses Basic and login-form attempts from a locked-out
+/// address before any password hashing, and records rejected credentials.
+pub(crate) async fn login_throttle(
+    State(state): State<Arc<AppState>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let is_attempt = request
+        .headers()
+        .get(header::AUTHORIZATION)
+        .is_some_and(|value| value.as_bytes().starts_with(b"Basic "))
+        || (request.method() == Method::POST && request.uri().path() == "/login");
+    if !is_attempt {
+        return next.run(request).await;
+    }
+    let ip = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|info| info.0.ip())
+        .unwrap_or(IpAddr::V6(Ipv6Addr::UNSPECIFIED));
+    if state.login_limiter.is_locked(ip, Instant::now()) {
+        return auth_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            "Too many failed logins from this address. Try again later.",
+        );
+    }
+    let response = next.run(request).await;
+    if response.extensions().get::<CredentialRejected>().is_some() {
+        state.login_limiter.record_failure(ip, Instant::now());
+    }
+    response
 }
 
 fn verify_password(config: &AuthConfig, password: &str) -> bool {
@@ -192,28 +316,12 @@ fn verify_password(config: &AuthConfig, password: &str) -> bool {
     let Some(hash) = &config.password_hash else {
         return false;
     };
-    if hash.starts_with("$argon2") {
-        let Ok(parsed) = PasswordHash::new(hash) else {
-            return false;
-        };
-        return Argon2::default()
-            .verify_password(password.as_bytes(), &parsed)
-            .is_ok();
-    }
-    let Some((prefix, rest)) = hash.split_once(':') else {
+    let Ok(parsed) = PasswordHash::new(hash) else {
         return false;
     };
-    if prefix != "sha256" {
-        return false;
-    }
-    let Some((salt_hex, expected_hex)) = rest.split_once(':') else {
-        return false;
-    };
-    let (Ok(salt), Ok(expected)) = (hex::decode(salt_hex), hex::decode(expected_hex)) else {
-        return false;
-    };
-    let actual = password_digest(&salt, password);
-    actual.as_slice().ct_eq(expected.as_slice()).into()
+    Argon2::default()
+        .verify_password(password.as_bytes(), &parsed)
+        .is_ok()
 }
 
 pub(crate) fn create_session_cookie(
@@ -335,13 +443,6 @@ pub(crate) fn hash_password_cmd(args: &[String]) -> io::Result<()> {
     Ok(())
 }
 
-fn password_digest(salt: &[u8], password: &str) -> Vec<u8> {
-    let mut hasher = Sha256::new();
-    hasher.update(salt);
-    hasher.update(password.as_bytes());
-    hasher.finalize().to_vec()
-}
-
 fn random_secret() -> Vec<u8> {
     let mut secret = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut secret);
@@ -354,7 +455,7 @@ pub(crate) fn random_token() -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(token)
 }
 
-fn env_flag(name: &str, default: bool) -> bool {
+pub(crate) fn env_flag(name: &str, default: bool) -> bool {
     env::var(name)
         .ok()
         .map(|value| {
@@ -376,13 +477,17 @@ fn io_other(error: impl std::fmt::Display) -> io::Error {
 
 #[cfg(test)]
 pub(crate) fn test_auth_config(oidc_enabled: bool) -> AuthConfig {
+    // Deliberately cheap Argon2 parameters so tests stay fast; the verifier
+    // reads the parameters from the hash string.
+    let cheap = Argon2::new(
+        argon2::Algorithm::Argon2id,
+        argon2::Version::V0x13,
+        argon2::Params::new(8, 1, 1, None).unwrap(),
+    );
+    let salt = SaltString::encode_b64(b"0123456789abcdef").unwrap();
     AuthConfig {
         user: "motehold".into(),
-        password_hash: Some(format!(
-            "sha256:{}:{}",
-            hex::encode(b"0123456789abcdef"),
-            hex::encode(password_digest(b"0123456789abcdef", "secret"))
-        )),
+        password_hash: Some(cheap.hash_password(b"secret", &salt).unwrap().to_string()),
         cookie_secret: vec![7; 32],
         auth_disabled: false,
         oidc: oidc_enabled.then(OidcConfig::test_config),
@@ -437,6 +542,38 @@ mod tests {
         let config = test_auth_config(false);
         assert!(verify_password(&config, "secret"));
         assert!(!verify_password(&config, "wrong"));
+    }
+
+    #[test]
+    fn legacy_sha256_hashes_are_no_longer_accepted() {
+        let mut config = test_auth_config(false);
+        config.password_hash = Some(format!(
+            "sha256:{}:{}",
+            hex::encode(b"0123456789abcdef"),
+            hex::encode([0u8; 32])
+        ));
+        assert!(!verify_password(&config, "secret"));
+    }
+
+    #[test]
+    fn login_limiter_locks_after_repeated_failures_and_recovers() {
+        let limiter = LoginLimiter::default();
+        let ip: IpAddr = "192.0.2.10".parse().unwrap();
+        let other: IpAddr = "192.0.2.11".parse().unwrap();
+        let start = Instant::now();
+        for i in 0..LOGIN_FAILURE_LIMIT - 1 {
+            limiter.record_failure(ip, start + StdDuration::from_secs(i as u64));
+        }
+        assert!(!limiter.is_locked(ip, start + StdDuration::from_secs(10)));
+        limiter.record_failure(ip, start + StdDuration::from_secs(10));
+        assert!(limiter.is_locked(ip, start + StdDuration::from_secs(11)));
+        assert!(!limiter.is_locked(other, start + StdDuration::from_secs(11)));
+        assert!(limiter.is_locked(ip, start + LOGIN_FAILURE_WINDOW - StdDuration::from_secs(1)));
+        // The oldest failures age out of the window and the address recovers.
+        assert!(!limiter.is_locked(
+            ip,
+            start + LOGIN_FAILURE_WINDOW + StdDuration::from_secs(11)
+        ));
     }
 
     #[test]

@@ -1044,7 +1044,6 @@ dependencies = [
  "rusqlite",
  "serde",
  "sha2",
- "subtle",
  "tokio",
  "tower",
  "url",
