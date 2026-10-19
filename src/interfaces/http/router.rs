@@ -1,6 +1,7 @@
 use axum::{
     Router,
     extract::DefaultBodyLimit,
+    middleware::from_fn_with_state,
     routing::{get, post},
 };
 
@@ -33,6 +34,7 @@ pub(crate) fn build_router(state: Arc<AppState>) -> Router {
         .layer(DefaultBodyLimit::max(
             MAX_IMAGE_BYTES + MAX_NOTE_CHARS + MAX_ATTACHMENT_BYTES + 1024 * 1024,
         ))
+        .layer(from_fn_with_state(state.clone(), auth::login_throttle))
         .with_state(state)
 }
 
@@ -57,7 +59,35 @@ mod tests {
                 db_path: PathBuf::new(),
                 auth: crate::security::auth::test_auth_config(true),
             },
+            login_limiter: Default::default(),
         })
+    }
+
+    #[tokio::test]
+    async fn repeated_wrong_passwords_lock_the_address_out() {
+        let app = build_router(oidc_state());
+        let post = |password: &str| {
+            Request::post("/login")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(format!("password={password}")))
+                .unwrap()
+        };
+        for _ in 0..5 {
+            let response = app.clone().oneshot(post("wrong")).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+        let locked = app.clone().oneshot(post("secret")).await.unwrap();
+        assert_eq!(locked.status(), StatusCode::TOO_MANY_REQUESTS);
+        let basic = app
+            .oneshot(
+                Request::get("/")
+                    .header(header::AUTHORIZATION, "Basic bW90ZWhvbGQ6c2VjcmV0")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(basic.status(), StatusCode::TOO_MANY_REQUESTS);
     }
 
     #[tokio::test]

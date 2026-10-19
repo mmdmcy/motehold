@@ -42,16 +42,56 @@ pub(crate) struct OidcConfig {
     client_id: String,
     client_secret: String,
     redirect_url: String,
+    /// Accepted `sub` claims; empty means any subject.
+    allowed_subjects: Vec<String>,
+    /// Accepted `email` claims, lower-cased; empty means any email.
+    allowed_emails: Vec<String>,
 }
 
 impl OidcConfig {
     pub(crate) fn from_env() -> io::Result<Option<Self>> {
-        Self::from_values(
+        Ok(Self::from_values(
             env_value("MOTEHOLD_OIDC_ISSUER"),
             env_value("MOTEHOLD_OIDC_CLIENT_ID"),
             env_value("MOTEHOLD_OIDC_CLIENT_SECRET"),
             env_value("MOTEHOLD_OIDC_REDIRECT_URL"),
-        )
+        )?
+        .map(|config| {
+            config.with_allowlist(
+                env_list("MOTEHOLD_OIDC_ALLOWED_SUBJECTS"),
+                env_list("MOTEHOLD_OIDC_ALLOWED_EMAILS"),
+            )
+        }))
+    }
+
+    fn with_allowlist(mut self, subjects: Vec<String>, emails: Vec<String>) -> Self {
+        self.allowed_subjects = subjects;
+        self.allowed_emails = emails
+            .into_iter()
+            .map(|email| email.to_lowercase())
+            .collect();
+        self
+    }
+
+    /// True when an allowlist restricts which IdP identities may log in.
+    pub(crate) fn restricts_identities(&self) -> bool {
+        !self.allowed_subjects.is_empty() || !self.allowed_emails.is_empty()
+    }
+
+    /// Whether a verified identity may log in. With no allowlist every
+    /// identity the issuer vouches for is accepted; otherwise the subject or
+    /// the email must match one of the configured values.
+    fn permits(&self, subject: &str, email: Option<&str>) -> bool {
+        if !self.restricts_identities() {
+            return true;
+        }
+        self.allowed_subjects
+            .iter()
+            .any(|allowed| allowed == subject)
+            || email.is_some_and(|email| {
+                let email = email.to_lowercase();
+                self.allowed_emails.contains(&email)
+            })
     }
 
     fn from_values(
@@ -84,6 +124,8 @@ impl OidcConfig {
             client_id: client_id.unwrap(),
             client_secret: client_secret.unwrap(),
             redirect_url,
+            allowed_subjects: Vec::new(),
+            allowed_emails: Vec::new(),
         }))
     }
 
@@ -98,6 +140,8 @@ impl OidcConfig {
             client_id: "motehold".into(),
             client_secret: String::from("placeholder"),
             redirect_url: "https://motehold.example.test/auth/oidc/callback".into(),
+            allowed_subjects: Vec::new(),
+            allowed_emails: Vec::new(),
         }
     }
 }
@@ -258,13 +302,21 @@ pub(crate) async fn oidc_callback(
             "Organization login returned no identity.",
         );
     };
-    if id_token
-        .claims(&client.id_token_verifier(), &Nonce::new(pending.nonce))
-        .is_err()
-    {
+    let Ok(claims) = id_token.claims(&client.id_token_verifier(), &Nonce::new(pending.nonce))
+    else {
         return failed(
             StatusCode::UNAUTHORIZED,
             "Organization identity verification failed.",
+        );
+    };
+    let subject = claims.subject().as_str();
+    if !config.permits(subject, claims.email().map(|email| email.as_str())) {
+        eprintln!(
+            "OIDC login refused: subject {subject:?} matches neither MOTEHOLD_OIDC_ALLOWED_SUBJECTS nor MOTEHOLD_OIDC_ALLOWED_EMAILS"
+        );
+        return failed(
+            StatusCode::FORBIDDEN,
+            "This organization identity is not allowed to use Motehold.",
         );
     }
 
@@ -481,6 +533,19 @@ fn env_value(name: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+fn env_list(name: &str) -> Vec<String> {
+    env_value(name)
+        .map(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn invalid_input(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message.into())
 }
@@ -525,6 +590,21 @@ mod tests {
             validate_oidc_url("redirect", "http://localhost:8787/auth/oidc/callback", true).is_ok()
         );
         assert!(validate_oidc_url("redirect", "javascript:alert(1)", true).is_err());
+    }
+
+    #[test]
+    fn allowlist_restricts_identities_only_when_configured() {
+        let open = OidcConfig::test_config();
+        assert!(!open.restricts_identities());
+        assert!(open.permits("anyone", None));
+
+        let restricted = OidcConfig::test_config()
+            .with_allowlist(vec!["sub-1".into()], vec!["Rei@Example.test".into()]);
+        assert!(restricted.restricts_identities());
+        assert!(restricted.permits("sub-1", None));
+        assert!(restricted.permits("sub-2", Some("rei@example.test")));
+        assert!(!restricted.permits("sub-2", Some("other@example.test")));
+        assert!(!restricted.permits("sub-2", None));
     }
 
     #[test]

@@ -2,7 +2,15 @@
 
 - Bind Motehold to a private interface, not `0.0.0.0`.
 - Keep `.env`, local TOML, databases, uploads, and logs out of Git.
-- Use a password hash in configuration, not a plaintext password.
+- Use an Argon2 password hash in configuration, not a plaintext password; the
+  legacy `sha256:salt:hash` format is no longer accepted.
+- Authentication is on by default. Disabling it is refused on non-loopback
+  binds unless `MOTEHOLD_ALLOW_OPEN_BIND=1` is set deliberately.
+- Rejected passwords and Basic credentials are counted per client address;
+  five failures in ten minutes lock that address out for up to ten minutes,
+  before any password hashing runs.
+- Set `MOTEHOLD_OIDC_ALLOWED_SUBJECTS` or `MOTEHOLD_OIDC_ALLOWED_EMAILS` with
+  managed login; without them every identity at the issuer is accepted.
 - Configure a stable `MOTEHOLD_COOKIE_SECRET` of at least 32 decoded bytes for
   authenticated deployments and share it across instances. Missing or invalid
   values create an ephemeral key that invalidates sessions and OIDC flows on

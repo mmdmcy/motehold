@@ -26,25 +26,41 @@ cargo run -- serve
 ```
 
 By default Motehold binds to `127.0.0.1:8787`, stores data in
-`data/motehold.sqlite`, and has auth disabled for trusted local development.
-
-For a password-protected instance:
+`data/motehold.sqlite`, and requires a local password:
 
 ```sh
 cargo run -- hash-password --stdin
-MOTEHOLD_AUTH_DISABLED=0 MOTEHOLD_PASSWORD_HASH='$argon2id$...' cargo run -- serve
+MOTEHOLD_PASSWORD_HASH='$argon2id$...' cargo run -- serve
 ```
+
+For auth-free local development on loopback only:
+
+```sh
+MOTEHOLD_AUTH_DISABLED=1 cargo run -- serve
+```
+
+Motehold refuses to start when auth is disabled and `MOTEHOLD_BIND` is not a
+loopback address. To knowingly serve an unauthenticated board on a LAN or
+tailnet address, set `MOTEHOLD_ALLOW_OPEN_BIND=1` together with
+`MOTEHOLD_AUTH_DISABLED=1`.
 
 ## Configuration
 
 ```text
 MOTEHOLD_BIND=127.0.0.1:8787
 MOTEHOLD_DB=data/motehold.sqlite
-MOTEHOLD_AUTH_DISABLED=1
+MOTEHOLD_AUTH_DISABLED=0
+MOTEHOLD_ALLOW_OPEN_BIND=0
 MOTEHOLD_PASSWORD_HASH=<argon2 hash>
 MOTEHOLD_COOKIE_SECRET=<stable random hex, at least 32 bytes>
 MOTEHOLD_COOKIE_SECURE=0
 ```
+
+Only Argon2 hashes from `hash-password` are accepted; the former
+`sha256:salt:hash` format is no longer recognized, so re-hash any such
+password. After five rejected passwords or Basic credentials from one client
+address within ten minutes, further attempts from that address are refused
+with `429` until the oldest failure is ten minutes old.
 
 Set `MOTEHOLD_COOKIE_SECRET` explicitly whenever authentication is enabled.
 Keep the same deployment-managed value across restarts and all instances; a
@@ -63,7 +79,17 @@ MOTEHOLD_OIDC_ISSUER=https://identity.example.invalid
 MOTEHOLD_OIDC_CLIENT_ID=motehold
 MOTEHOLD_OIDC_CLIENT_SECRET=<oidc client secret>
 MOTEHOLD_OIDC_REDIRECT_URL=https://motehold.example.invalid/auth/oidc/callback
+MOTEHOLD_OIDC_ALLOWED_SUBJECTS=<comma-separated sub claims>
+MOTEHOLD_OIDC_ALLOWED_EMAILS=<comma-separated email claims>
 ```
+
+A verified ID token only creates a session when its `sub` is listed in
+`MOTEHOLD_OIDC_ALLOWED_SUBJECTS` or its `email` (case-insensitive) is listed in
+`MOTEHOLD_OIDC_ALLOWED_EMAILS`; other identities get `403` and a log line with
+the subject. When neither list is set, every identity the issuer vouches for
+is accepted and Motehold prints a startup warning saying so. Email matching
+trusts the issuer's `email` claim, so prefer subjects where the provider
+allows users to change their address.
 
 The issuer and redirect URL must use HTTPS. Loopback HTTP is accepted only for
 explicit local dogfood testing. Discovered authorization, token, userinfo, and

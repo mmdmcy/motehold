@@ -13,6 +13,7 @@ pub(crate) async fn serve() -> io::Result<()> {
     let state = Arc::new(AppState {
         db: Mutex::new(conn),
         config,
+        login_limiter: Default::default(),
     });
     let app = build_router(state.clone());
     let bind = state
@@ -22,5 +23,9 @@ pub(crate) async fn serve() -> io::Result<()> {
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
     let listener = tokio::net::TcpListener::bind(bind).await?;
     println!("Motehold listening on http://{bind}");
-    axum::serve(listener, app).await
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
 }
