@@ -126,6 +126,12 @@ func openStore(db string) (*store, error) {
 	}
 	data, err := s.load()
 	if errors.Is(err, os.ErrNotExist) {
+		// A Rust database beside a missing store means the import has not
+		// run: starting empty would hide every note.
+		if info, statErr := os.Stat(db); statErr == nil && db != path && info.Mode().IsRegular() {
+			s.close()
+			return nil, fmt.Errorf("the store %s is missing but %s is there: import it once with `motehold import-sqlite --from A_COPY_OF_IT` (see README)", path, db)
+		}
 		data = &storeData{NextChannelID: 1, NextNoteID: 1}
 		err = nil
 	}

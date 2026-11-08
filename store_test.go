@@ -155,6 +155,14 @@ func TestDeletingAChannelTakesItsNotesAndUnusedBlobs(t *testing.T) {
 	}
 }
 
+func TestAnUnimportedRustDatabaseStopsTheStart(t *testing.T) {
+	db := filepath.Join(t.TempDir(), "motehold.sqlite")
+	os.WriteFile(db, []byte("SQLite format 3\x00"), 0o600)
+	if _, err := openStore(db); err == nil || !strings.Contains(err.Error(), "import-sqlite") {
+		t.Fatal(err)
+	}
+}
+
 func TestStorePathsKeepTheSetting(t *testing.T) {
 	for db, want := range map[string]string{
 		"/opt/x/services/motehold/motehold.sqlite": "/opt/x/services/motehold/motehold.json",
