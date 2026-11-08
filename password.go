@@ -17,8 +17,9 @@ import (
 // Local passwords are PBKDF2-HMAC-SHA256 from Go's standard library, in a
 // PHC string: $pbkdf2-sha256$i=ITERATIONS,l=32$SALT$HASH (unpadded base64).
 // 600,000 iterations is OWASP's recommendation for PBKDF2-HMAC-SHA256
-// (Password Storage Cheat Sheet, read 2026-11-08; linuxmice
-// docs/reference/sources/password-hashing/2026-11-08-owasp-password-storage.txt).
+// (Password Storage Cheat Sheet,
+// https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html,
+// read 2026-11-08).
 // The Rust service's Argon2 hashes cannot be checked without an Argon2
 // implementation, which the standard library does not have, so an Argon2
 // hash is refused at start with the command that makes a new one.

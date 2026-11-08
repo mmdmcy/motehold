@@ -23,7 +23,7 @@ only. `main.go` selects a CLI command; each file owns one capability.
 | One-time import | `importer.go` | `import-sqlite` | The system's `sqlite3`, store |
 | Local authentication | `auth.go`, `password.go` | Guards, login/logout, sessions, throttle, `hash-password` | Store, pages |
 | OIDC sign-in | `oidc.go` | `oidcStart`, `oidcCallback` | `net/http`, `crypto/*`, store |
-| Status envelope | `status.go` | `/.well-known/linuxmice/component` | Auth config |
+| Status envelope | `status.go` | The component status route (see README) | Auth config |
 | Public-tree audit | `audit.go` | `audit-public` | Git and the filesystem |
 
 ## Data Model

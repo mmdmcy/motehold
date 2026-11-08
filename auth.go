@@ -72,12 +72,14 @@ func authConfigFromEnv() (*authConfig, error) {
 	}, nil
 }
 
+// validateAuthPolicy: a local password, OIDC, or both. With OIDC and no
+// password hash, only the provider signs people in.
 func validateAuthPolicy(hashSet, authDisabled, oidcEnabled bool) error {
-	if oidcEnabled && (authDisabled || !hashSet) {
-		return errors.New("managed OIDC requires MOTEHOLD_AUTH_DISABLED=0 and MOTEHOLD_PASSWORD_HASH for local break-glass login")
+	if oidcEnabled && authDisabled {
+		return errors.New("OIDC login requires MOTEHOLD_AUTH_DISABLED=0")
 	}
-	if !hashSet && !authDisabled {
-		return errors.New("MOTEHOLD_PASSWORD_HASH is required unless MOTEHOLD_AUTH_DISABLED=1")
+	if !hashSet && !authDisabled && !oidcEnabled {
+		return errors.New("MOTEHOLD_PASSWORD_HASH is required unless OIDC is configured or MOTEHOLD_AUTH_DISABLED=1")
 	}
 	return nil
 }
@@ -86,12 +88,17 @@ func (c *authConfig) identityMode() string {
 	switch {
 	case c.authDisabled:
 		return "disabled"
+	case c.oidc != nil && c.passwordHash == nil:
+		return "oidc"
 	case c.oidc != nil:
 		return "oidc+local"
 	default:
 		return "local"
 	}
 }
+
+// localLogin says whether the local password signs in.
+func (c *authConfig) localLogin() bool { return c.passwordHash != nil }
 
 func (c *authConfig) secureSuffix() string {
 	if c.cookieSecure {
@@ -173,7 +180,7 @@ func (a *app) loginPage(r *http.Request) *response {
 	if a.access(r) == accessGranted {
 		return redirect("/")
 	}
-	return html(http.StatusOK, page("Motehold Login", loginBody(a.auth.oidc != nil, "")))
+	return html(http.StatusOK, page("Motehold Login", loginBody(a.auth.oidc != nil, a.auth.localLogin(), "")))
 }
 
 func (a *app) loginPost(r *http.Request) *response {
@@ -185,8 +192,11 @@ func (a *app) loginPost(r *http.Request) *response {
 	if rejection != nil {
 		return rejection
 	}
+	if !a.auth.localLogin() {
+		return a.authError(http.StatusForbidden, "Local password login is not enabled.")
+	}
 	if !a.auth.verifyPassword(password) {
-		return html(http.StatusOK, page("Motehold Login", loginBody(a.auth.oidc != nil, "Wrong password."))).reject()
+		return html(http.StatusOK, page("Motehold Login", loginBody(a.auth.oidc != nil, true, "Wrong password."))).reject()
 	}
 	cookie, err := a.createSessionCookie("local", time.Now().Unix())
 	if err != nil {
@@ -249,7 +259,16 @@ func (a *app) keyedHash(purpose, value string) string {
 }
 
 func (a *app) authError(status int, message string) *response {
-	return html(status, page("Motehold Login", authErrorBody(message)))
+	return html(status, page("Motehold Login", authErrorBody(message, a.auth.localLogin())))
+}
+
+// providerUnavailable is the message when the OIDC provider cannot be
+// reached, naming the local login only when there is one.
+func (a *app) providerUnavailable() string {
+	if a.auth.localLogin() {
+		return "Organization login is temporarily unavailable. Local break-glass login remains available."
+	}
+	return "Organization login is temporarily unavailable."
 }
 
 // loginLimiter counts rejected credentials per client address: after

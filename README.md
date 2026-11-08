@@ -82,8 +82,10 @@ and pending OIDC flows on restart.
 
 Motehold remains fully standalone. Managed login is an optional dogfood-alpha
 integration, not an enterprise-readiness or certification claim. To enable it,
-set all four values below, set `MOTEHOLD_AUTH_DISABLED=0`, and keep
-`MOTEHOLD_PASSWORD_HASH` configured as an independent local break-glass path:
+set all four values below and `MOTEHOLD_AUTH_DISABLED=0`. With
+`MOTEHOLD_PASSWORD_HASH` also set, the local password stays as an independent
+break-glass login; without it, only the OpenID Connect provider signs people
+in, and the password form and HTTP Basic credentials are refused:
 
 ```text
 MOTEHOLD_OIDC_ISSUER=https://identity.example.invalid
@@ -118,7 +120,8 @@ For local service discovery and health checks, Motehold exposes a minimal,
 unauthenticated status envelope at
 `/.well-known/linuxmice/component`. It contains no notes, attachment metadata,
 database paths, credentials, or identity endpoints. Its `identity_mode` is
-`disabled`, `local`, or `oidc+local` according to the active configuration.
+`disabled`, `local`, `oidc` or `oidc+local` according to the active
+configuration.
 The matching optional catalog declaration is `linuxmice-component.toml`;
 Motehold does not require the LinuxMice hub or identity service to run.
 

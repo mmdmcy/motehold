@@ -28,7 +28,7 @@ import (
 // on a companion .lock file while it runs, so two processes never share a
 // store.
 
-const storeFormat = "katteke.motehold.store.v1"
+const storeFormat = "motehold.store.v1"
 
 type channel struct {
 	ID        int64  `json:"id"`

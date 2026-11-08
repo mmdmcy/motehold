@@ -33,6 +33,14 @@ func testAuthConfig(t *testing.T, oidcEnabled bool) *authConfig {
 	return config
 }
 
+// testOIDCOnly is OIDC with no local password.
+func testOIDCOnly(t *testing.T) *authConfig {
+	t.Helper()
+	config := testAuthConfig(t, true)
+	*config = authConfig{user: config.user, cookieSecret: config.cookieSecret, cookieSecure: true, oidc: config.oidc}
+	return config
+}
+
 func testOIDCConfig() *oidcConfig {
 	return &oidcConfig{issuer: "https://identity.example.test", clientID: "motehold", clientSecret: "placeholder",
 		redirectURL: "https://motehold.example.test/auth/oidc/callback"}
@@ -166,15 +174,19 @@ func TestCallbackRouteRejectsMissingFlowAndClearsFlowCookie(t *testing.T) {
 }
 
 func TestLoginHTMLPreservesManagedAndBreakGlassChoices(t *testing.T) {
-	managed := loginBody(true, "Wrong password.")
+	managed := loginBody(true, true, "Wrong password.")
 	for _, want := range []string{"Organization login", "Local login", "Wrong password."} {
 		if !strings.Contains(managed, want) {
 			t.Fatal(want)
 		}
 	}
-	local := loginBody(false, "")
+	local := loginBody(false, true, "")
 	if strings.Contains(local, "Organization login") || !strings.Contains(local, "Local login") {
 		t.Fatal(local)
+	}
+	only := loginBody(true, false, "")
+	if !strings.Contains(only, "Organization login") || strings.Contains(only, "password") || strings.Contains(only, "break-glass") {
+		t.Fatal(only)
 	}
 }
 

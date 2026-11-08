@@ -30,33 +30,46 @@ func page(title, body string) string {
 </html>`
 }
 
-func loginBody(oidcEnabled bool, message string) string {
+// loginBody shows the organization login when OIDC is set and the password
+// form when a local password is set.
+func loginBody(oidcEnabled, localEnabled bool, message string) string {
 	organization := ""
 	if oidcEnabled {
-		organization = `<a class="button" href="/auth/oidc/start">Organization login</a>
+		organization = `<a class="button" href="/auth/oidc/start">Organization login</a>`
+		if localEnabled {
+			organization += `
   <p>Or use the local break-glass account:</p>`
+		}
 	}
 	errorHTML := ""
 	if message != "" {
 		errorHTML = `<p class="error">` + message + `</p>`
+	}
+	form := ""
+	if localEnabled {
+		form = `<form action="/login" method="post">
+    <label>Local password</label>
+    <input name="password" type="password" autocomplete="current-password" autofocus required>
+    <button type="submit">Local login</button>
+  </form>`
 	}
 	return `
 <main class="login">
   <h1>Motehold</h1>
   ` + organization + `
   ` + errorHTML + `
-  <form action="/login" method="post">
-    <label>Local password</label>
-    <input name="password" type="password" autocomplete="current-password" autofocus required>
-    <button type="submit">Local login</button>
-  </form>
+  ` + form + `
 </main>
 `
 }
 
-func authErrorBody(message string) string {
+func authErrorBody(message string, localEnabled bool) string {
+	back := "Back to login"
+	if localEnabled {
+		back = "Use local break-glass login"
+	}
 	return `<main class="login"><h1>Motehold</h1><p class="error">` + message +
-		`</p><p><a href="/login">Use local break-glass login</a></p></main>`
+		`</p><p><a href="/login">` + back + `</a></p></main>`
 }
 
 // noteRow is one listed note, as the listing query returned it.

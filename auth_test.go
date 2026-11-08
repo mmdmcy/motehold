@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/base64"
+	"net/http/httptest"
 	"net/netip"
 	"strings"
 	"testing"
@@ -10,18 +12,56 @@ import (
 // Carried over from the Rust tests: auth policy, sessions, password hashes,
 // the login limiter and the identity mode.
 
-func TestManagedOIDCRequiresLocalBreakGlass(t *testing.T) {
-	if validateAuthPolicy(false, false, true) == nil {
-		t.Fatal("OIDC without a password hash")
+func TestAuthPolicy(t *testing.T) {
+	if validateAuthPolicy(false, false, false) == nil {
+		t.Fatal("neither a password hash nor OIDC")
 	}
-	if validateAuthPolicy(true, true, true) == nil {
+	if validateAuthPolicy(true, true, true) == nil || validateAuthPolicy(false, true, true) == nil {
 		t.Fatal("OIDC with auth disabled")
 	}
-	if err := validateAuthPolicy(true, false, true); err != nil {
-		t.Fatal(err)
+	for _, hashSet := range []bool{true, false} {
+		if err := validateAuthPolicy(hashSet, false, true); err != nil {
+			t.Fatal(hashSet, err)
+		}
 	}
 	if !testAuthConfig(t, true).verifyPassword("secret") {
 		t.Fatal("break-glass password")
+	}
+}
+
+// With OIDC and no password hash, only the provider signs people in: the
+// mode says oidc, the login page has no password form, and the login form
+// and HTTP Basic credentials are refused.
+func TestOIDCWithoutALocalPassword(t *testing.T) {
+	t.Setenv("MOTEHOLD_PASSWORD_HASH", "")
+	t.Setenv("MOTEHOLD_OIDC_ISSUER", "https://identity.example.test")
+	t.Setenv("MOTEHOLD_OIDC_CLIENT_ID", "motehold")
+	t.Setenv("MOTEHOLD_OIDC_CLIENT_SECRET", "placeholder")
+	t.Setenv("MOTEHOLD_OIDC_REDIRECT_URL", "https://motehold.example.test/auth/oidc/callback")
+	t.Setenv("MOTEHOLD_OIDC_ALLOWED_SUBJECTS", "someone")
+	config, err := authConfigFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.identityMode() != "oidc" || config.localLogin() || config.verifyPassword("") {
+		t.Fatal(config.identityMode())
+	}
+	a := testApp(t, true)
+	a.auth = testOIDCOnly(t)
+	page := call(a, "GET", "/login", "", "")
+	if page.status != 200 || !strings.Contains(page.body, "/auth/oidc/start") || strings.Contains(page.body, `name="password"`) {
+		t.Fatal(page.status, page.body)
+	}
+	post := call(a, "POST", "/login", formType, "password=secret")
+	if post.status != 403 || len(post.header.Values("Set-Cookie")) != 0 {
+		t.Fatal(post.status)
+	}
+	basic := call(a, "GET", "/", "", "", "Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("motehold:secret")))
+	if basic.status != 303 || basic.header.Get("Location") != "/login" {
+		t.Fatal(basic.status, basic.header)
+	}
+	if status := a.componentStatus(httptest.NewRequest("GET", "/", nil)); !strings.Contains(string(status.body), `"identity_mode":"oidc"`) {
+		t.Fatal(string(status.body))
 	}
 }
 
@@ -86,6 +126,9 @@ func TestIdentityModeMatchesEffectiveAuthConfiguration(t *testing.T) {
 		t.Fatal(got)
 	}
 	if got := testAuthConfig(t, true).identityMode(); got != "oidc+local" {
+		t.Fatal(got)
+	}
+	if got := testOIDCOnly(t).identityMode(); got != "oidc" {
 		t.Fatal(got)
 	}
 	disabled := testAuthConfig(t, false)
