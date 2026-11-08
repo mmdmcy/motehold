@@ -1,9 +1,10 @@
 # Security Notes
 
 - Bind Motehold to a private interface, not `0.0.0.0`.
-- Keep `.env`, local TOML, databases, uploads, and logs out of Git.
-- Use an Argon2 password hash in configuration, not a plaintext password; the
-  legacy `sha256:salt:hash` format is no longer accepted.
+- Keep `.env`, local TOML, stores, uploads, and logs out of Git.
+- Use a PBKDF2-SHA256 hash from `motehold hash-password --stdin` in
+  configuration, not a plaintext password. Argon2 hashes from the Rust version
+  and the legacy `sha256:salt:hash` format are refused at start.
 - Authentication is on by default. Disabling it is refused on non-loopback
   binds unless `MOTEHOLD_ALLOW_OPEN_BIND=1` is set deliberately.
 - Rejected passwords and Basic credentials are counted per client address;
@@ -18,22 +19,21 @@
 - Managed OIDC is alpha. Keep the local password as break-glass access, use
   HTTPS outside loopback, and do not treat this pilot as enterprise-ready.
 - OIDC state is one-time, browser-bound, and short lived. App session tokens
-  are opaque and only their HMAC-SHA256 digests are stored in SQLite.
+  are opaque and only their HMAC-SHA256 digests are stored in the store.
 - OIDC discovery refuses redirects and rejects non-HTTPS endpoints except for
   explicit loopback HTTP dogfood URLs. Token client authentication is selected
   from provider metadata and limited to `client_secret_post` or
   `client_secret_basic`.
-- Dogfood-alpha dependency risk: `openidconnect` currently brings in
-  `rsa 0.9.10`, which `cargo audit` flags as RUSTSEC-2023-0071 with no fixed
-  release. This relying-party app holds no RSA private key, and the LinuxMice
-  identity pilot uses Ed25519, so the vulnerable private-key operation is not
-  expected on this path. The unresolved audit remains a production-readiness
-  blocker and must be reassessed before wider deployment.
-- Uploaded images are stored in the SQLite database; keep the database private.
-- Run `cargo run -- audit-public` before publishing. It checks tracked files
+- No third-party code: Motehold is built from Go's standard library only
+  (`go list -m all` names only Motehold). The OIDC client, the ID token check
+  and the store are in this repository. The Rust version's `openidconnect`
+  dependency and its `rsa` advisory (RUSTSEC-2023-0071) are gone with it.
+- Uploaded images and attachments are stored in `motehold.blobs/` beside the
+  record file, owner-only; keep both private.
+- Run `go run . audit-public` before publishing. It checks tracked files
   for ignored private paths, common secret markers, Tailscale-style private
   IPs, private key material, and optional local denylist terms.
-- Install local Git hooks with `cargo run -- audit-public --install-hook`.
+- Install local Git hooks with `go run . audit-public --install-hook`.
 
 Host-specific denylist terms can be stored in ignored files:
 
