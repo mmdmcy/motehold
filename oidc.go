@@ -29,7 +29,7 @@ import (
 // Optional OpenID Connect sign-in: Authorization Code with S256 PKCE,
 // state and nonce, written with net/http and the standard library's crypto
 // in place of the openidconnect crate. ID tokens signed with EdDSA
-// (Ed25519, what lmidentityd uses), RS256, ES256 or HS256 are checked; the
+// (Ed25519), RS256, ES256 or HS256 are checked; the
 // issuer, audience, expiry and nonce are checked as the crate did. Provider
 // tokens are dropped after the callback; only an opaque app session is kept.
 
@@ -626,7 +626,7 @@ func (a *app) oidcStart(r *http.Request) *response {
 	client, err := discoverClient(config)
 	if err != nil {
 		logError("OIDC discovery", err)
-		return a.authError(http.StatusServiceUnavailable, "Organization login is temporarily unavailable. Local break-glass login remains available.")
+		return a.authError(http.StatusServiceUnavailable, a.providerUnavailable())
 	}
 	verifier := base64.RawURLEncoding.EncodeToString(randomBytes(32))
 	digest := sha256.Sum256([]byte(verifier))
@@ -680,7 +680,7 @@ func (a *app) oidcCallback(r *http.Request) *response {
 	client, err := discoverClient(config)
 	if err != nil {
 		logError("OIDC discovery", err)
-		return failed(http.StatusServiceUnavailable, "Organization login is temporarily unavailable. Local break-glass login remains available.")
+		return failed(http.StatusServiceUnavailable, a.providerUnavailable())
 	}
 	token, hasToken, err := client.exchangeCode(code, pending.PKCEVerifier)
 	if err != nil {
