@@ -1,60 +1,55 @@
 # Motehold Architecture
 
-Motehold is a small Rust/Axum application organized by product ownership. The
-binary only selects a CLI command and hands control to the owning capability.
+Motehold is one Go program in one package, built from the standard library
+only. `main.go` selects a CLI command; each file owns one capability.
 
 ## Runtime Shape
 
-- One Rust process serves Axum routes and uses one SQLite database.
-- `src/main.rs` dispatches the existing CLI commands; `src/app/` loads
-  configuration, opens storage, creates shared state, and starts the server.
-- The browser UI is an HTTP presentation over explicit note, persistence, and
-  authentication modules.
+- One Go process serves HTTP with `net/http` and keeps its data in a
+  standard-library file store (`store.go`): a checksummed JSON file for the
+  records and a folder of content-named files for images and attachments.
+- The browser UI is server-rendered HTML with a little inline JavaScript, as
+  before; no frontend build step.
 
 ## Core Boundaries
 
-| Capability | Ownership | Entry points | Permitted dependencies |
+| Capability | File | Entry points | Uses |
 | --- | --- | --- | --- |
-| Process and configuration | `src/app/` | `app::serve` | Features, HTTP router, persistence, security |
-| Notes and channels policy | `src/features/notes/` | Upload limits and validation rules | No application infrastructure |
-| Public-tree audit | `src/security/public_audit.rs` | `audit_public_cmd` | Git and filesystem process boundaries |
-| HTTP delivery | `src/interfaces/http/` | `build_router`, route handlers | App state, features, persistence, security |
-| HTML presentation | `src/interfaces/http/presentation.rs` | `page`, `notes_page` | Note query projections and note policy constants |
-| Durable storage | `src/persistence/` | Migrations and note/channel queries | SQLite and note policy types only |
-| Authentication, OIDC, and publication safety | `src/security/` | Auth configuration, guards, login/logout, OIDC start/callback, public-tree audit | App state, HTML presentation, SQLite, provider protocol, Git |
-
-Dependency direction is startup to interfaces/features/persistence/security,
-HTTP interfaces to note policy and persistence, and persistence to SQLite.
+| Process and configuration | `main.go` | `serve`, `configFromEnv`, `newApp` | Every capability below |
+| HTTP delivery | `web.go` | `router`, `response`, form/query/path parsing | Nothing app-specific |
+| Notes and channels | `notes.go` | Upload limits, validation rules, note handlers | Store, auth guards, pages |
+| HTML presentation | `pages.go`, `page.css` | `page`, `notesPage`, `loginBody` | Note rows and policy constants |
+| Durable storage | `store.go` | `openStore`, `view`, `update`, blobs | Filesystem only |
+| One-time import | `importer.go` | `import-sqlite` | The system's `sqlite3`, store |
+| Local authentication | `auth.go`, `password.go` | Guards, login/logout, sessions, throttle, `hash-password` | Store, pages |
+| OIDC sign-in | `oidc.go` | `oidcStart`, `oidcCallback` | `net/http`, `crypto/*`, store |
+| Status envelope | `status.go` | `/.well-known/linuxmice/component` | Auth config |
+| Public-tree audit | `audit.go` | `audit-public` | Git and the filesystem |
 
 ## Data Model
 
-- Versioned migrations own channels, notes, attachments, app sessions, and
-  pending OIDC flows.
-- Note and channel SQL is isolated in `src/persistence/notes.rs`.
-- The ownership refactor does not change the SQLite schema or migration order.
+- `storeData` holds channels, notes, app sessions, pending OIDC flows and the
+  next ids. `validate` enforces what the SQL schema did: unique channel names
+  without regard to ASCII case, notes pointing at a channel, unique import
+  sources, the session method's allowed values, ids that are never reused.
+- Every change goes through `store.update`: it works on a copy, validates it,
+  writes the file atomically and only then replaces the data in memory.
 
 ## Trust, Privacy, And Cost Boundaries
 
-- Authentication, session hashing, OIDC validation, and publication auditing
-  stay under `src/security/`.
+- Session tokens and OIDC state are stored only as HMAC-SHA256 digests keyed
+  with `MOTEHOLD_COOKIE_SECRET`.
 - OIDC remains optional. Local authentication and standalone mode do not need
   an identity provider to be available.
-- Upload limits remain note policy and are enforced by the HTTP boundary.
-
-## Extension Points
-
-- Add note policy in `src/features/notes/`, storage operations in
-  `src/persistence/notes.rs`, and delivery routes in `src/interfaces/http/`.
-- Add startup wiring in `src/app/`; keep `src/main.rs` limited to CLI/bootstrap.
+- Upload limits remain note policy and are enforced at the HTTP boundary.
 
 ## Verification
 
 ```bash
-cargo fmt --all --check
-cargo check --all-targets
-cargo clippy --all-targets -- -D warnings
-cargo test
-cargo run --quiet -- audit-public
-cargo katrust inspect
+gofmt -l .
+go vet ./...
+go test ./...
+go run . audit-public
+go list -m all
 git diff --check
 ```
