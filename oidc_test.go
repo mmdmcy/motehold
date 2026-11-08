@@ -135,7 +135,7 @@ type fakeProvider struct {
 	claims     func(nonce string) map[string]any
 	header     map[string]any
 	tamper     func(token string) string
-	answerBody  func(idToken string) string
+	answerBody func(idToken string) string
 	lastForm   url.Values
 	lastAuth   string
 	nonce      string
