@@ -153,11 +153,8 @@ sqlite3 -readonly data/motehold.sqlite ".backup /tmp/motehold-copy.sqlite"
 MOTEHOLD_DB=data/motehold.sqlite ./motehold import-sqlite --from /tmp/motehold-copy.sqlite
 ```
 
-On a host where Plugroot runs it (`<state root>/releases/motehold/current`),
-`deploy/cutover-to-go.sh` does the whole move in one run: checks, the new
-password (asked twice, not shown), the import, a new release with `current`
-flipped, the start and the checks after it; `--dry-run` prints every command
-and runs none, and the last line is the exact rollback command.
+The Rust version's Argon2 password hashes are not accepted (see
+Configuration): make a new one with `hash-password --stdin`.
 
 The Rust version is kept, buildable, in `archive/rust/`.
 
